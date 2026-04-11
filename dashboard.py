@@ -10,9 +10,12 @@ For internet access, use ngrok:
     ngrok http 5000
 """
 
-from flask import Flask, jsonify, render_template_string
+from flask import Flask, jsonify, Response
 import sqlite3
 from config import DB_PATH, PAPER_TRADE, MAX_TRADE_USDC
+
+LOG_PATH = "bot.log"
+LOG_TAIL_LINES = 100
 
 app = Flask(__name__)
 
@@ -104,6 +107,16 @@ def api_whales():
     return jsonify(rows)
 
 
+@app.route("/api/log")
+def api_log():
+    try:
+        with open(LOG_PATH, "r", encoding="utf-8", errors="replace") as f:
+            lines = f.readlines()
+        return jsonify({"lines": [l.rstrip() for l in lines[-LOG_TAIL_LINES:]]})
+    except FileNotFoundError:
+        return jsonify({"lines": ["bot.log not found"]})
+
+
 @app.route("/api/pnl_over_time")
 def api_pnl_over_time():
     rows = query("""
@@ -119,263 +132,217 @@ def api_pnl_over_time():
 
 # ── Dashboard HTML ────────────────────────────────────────────────────────────
 
-DASHBOARD_HTML = """
-<!DOCTYPE html>
+DASHBOARD_HTML = """<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Polymarket Copy-Bot Dashboard</title>
-  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
-  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
   <style>
-    body { background: #0f1117; color: #e0e0e0; font-family: 'Segoe UI', sans-serif; }
-    .navbar { background: #1a1d27 !important; border-bottom: 1px solid #2a2d3a; }
-    .card { background: #1a1d27; border: 1px solid #2a2d3a; border-radius: 12px; }
-    .card-title { color: #8b8fa8; font-size: 0.8rem; text-transform: uppercase; letter-spacing: 1px; }
-    .stat-value { font-size: 1.8rem; font-weight: 700; }
-    .positive { color: #00c49a; }
-    .negative { color: #ff4d6d; }
-    .neutral  { color: #e0e0e0; }
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body { background: #0f1117; color: #e0e0e0; font-family: 'Segoe UI', Arial, sans-serif; font-size: 14px; }
+    a { color: inherit; }
+    /* Nav */
+    .nav { display: flex; align-items: center; gap: 12px; background: #1a1d27;
+           border-bottom: 1px solid #2a2d3a; padding: 14px 24px; }
+    .nav-brand { font-size: 1.1rem; font-weight: 700; }
+    .nav-right { margin-left: auto; font-size: 0.72rem; color: #666; }
+    /* Badge */
+    .badge { padding: 3px 10px; border-radius: 20px; font-size: 0.72rem; font-weight: 700; }
     .badge-paper { background: #3d3a00; color: #ffd700; }
     .badge-live  { background: #003d1a; color: #00ff88; }
-    .table { color: #e0e0e0; }
-    .table thead th { color: #8b8fa8; border-color: #2a2d3a; font-size: 0.78rem; text-transform: uppercase; }
-    .table td { border-color: #2a2d3a; vertical-align: middle; font-size: 0.88rem; }
-    .table tbody tr:hover { background: #22253a; }
-    .status-open   { color: #4d9fff; }
-    .status-closed { color: #8b8fa8; }
-    .pill { padding: 3px 10px; border-radius: 20px; font-size: 0.75rem; font-weight: 600; }
-    .pill-open   { background: #0d2040; color: #4d9fff; }
-    .pill-closed { background: #1a1d27; color: #8b8fa8; border: 1px solid #2a2d3a; }
-    .pill-win    { background: #0d3025; color: #00c49a; }
-    .pill-loss   { background: #3d0d1a; color: #ff4d6d; }
-    .section-title { color: #8b8fa8; font-size: 0.8rem; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 12px; }
-    #pnlChart { max-height: 220px; }
-    .refresh-badge { font-size: 0.72rem; color: #555; }
-    .whale-wallet { font-family: monospace; font-size: 0.82rem; color: #8b8fa8; }
-    .market-q { max-width: 260px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    /* Layout */
+    .page { padding: 20px 24px; }
+    .grid-4 { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 16px; }
+    .grid-2 { display: grid; grid-template-columns: 3fr 2fr; gap: 12px; margin-bottom: 16px; }
+    @media(max-width:800px) { .grid-4 { grid-template-columns: 1fr 1fr; } .grid-2 { grid-template-columns: 1fr; } }
+    /* Cards */
+    .card { background: #1a1d27; border: 1px solid #2a2d3a; border-radius: 10px; padding: 14px 16px; }
+    .card-title { color: #8b8fa8; font-size: 0.72rem; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 6px; }
+    .stat { font-size: 1.7rem; font-weight: 700; }
+    /* Colors */
+    .pos { color: #00c49a; } .neg { color: #ff4d6d; } .neu { color: #e0e0e0; }
+    /* Section title */
+    .sec { color: #8b8fa8; font-size: 0.72rem; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 10px; }
+    /* Table */
+    .tbl { width: 100%; border-collapse: collapse; }
+    .tbl th { color: #8b8fa8; font-size: 0.72rem; text-transform: uppercase; padding: 6px 8px;
+               border-bottom: 1px solid #2a2d3a; text-align: left; }
+    .tbl td { padding: 7px 8px; border-bottom: 1px solid #1e2130; font-size: 0.85rem; vertical-align: middle; }
+    .tbl tr:hover td { background: #22253a; }
+    .mq { max-width: 240px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; display: block; }
+    .mono { font-family: monospace; font-size: 0.8rem; color: #8b8fa8; }
+    /* Pills */
+    .pill { padding: 2px 9px; border-radius: 20px; font-size: 0.72rem; font-weight: 700; }
+    .p-open { background: #0d2040; color: #4d9fff; }
+    .p-win  { background: #0d3025; color: #00c49a; }
+    .p-loss { background: #3d0d1a; color: #ff4d6d; }
+    /* Log */
+    .logbox { background: #0a0c12; border: 1px solid #2a2d3a; border-radius: 8px; padding: 12px;
+              height: 300px; overflow-y: auto; font-family: monospace; font-size: 0.75rem;
+              color: #a0a8b8; white-space: pre-wrap; word-break: break-all; }
+    .le { color: #ff4d6d; } .lw { color: #ffd700; } .li { color: #a0a8b8; }
+    /* Empty state */
+    .empty { text-align: center; color: #555; padding: 20px; }
+    /* Scroll container */
+    .scroll { max-height: 280px; overflow-y: auto; }
+    .mb { margin-bottom: 16px; }
   </style>
 </head>
 <body>
 
-<nav class="navbar navbar-dark px-4 py-3">
-  <span class="navbar-brand fw-bold">📈 Polymarket Copy-Bot</span>
-  <span id="modeBadge" class="pill badge-paper">PAPER TRADE</span>
-  <span class="refresh-badge ms-auto">Auto-refresh every 30s &nbsp; <span id="lastRefresh">—</span></span>
-</nav>
+<div class="nav">
+  <span class="nav-brand">Polymarket Copy-Bot</span>
+  <span id="modeBadge" class="badge badge-paper">PAPER TRADE</span>
+  <span class="nav-right">Auto-refresh 30s &nbsp; <span id="lastRefresh">—</span></span>
+</div>
 
-<div class="container-fluid px-4 py-4">
+<div class="page">
 
-  <!-- Summary cards -->
-  <div class="row g-3 mb-4" id="summaryCards">
-    <div class="col-6 col-md-3"><div class="card p-3">
-      <div class="card-title">Starting Balance</div>
-      <div class="stat-value neutral" id="startBal">—</div>
-    </div></div>
-    <div class="col-6 col-md-3"><div class="card p-3">
-      <div class="card-title">Current Balance</div>
-      <div class="stat-value" id="currBal">—</div>
-    </div></div>
-    <div class="col-6 col-md-3"><div class="card p-3">
-      <div class="card-title">Total P&L</div>
-      <div class="stat-value" id="totalPnl">—</div>
-    </div></div>
-    <div class="col-6 col-md-3"><div class="card p-3">
-      <div class="card-title">Win Rate</div>
-      <div class="stat-value neutral" id="winRate">—</div>
-    </div></div>
+  <div class="grid-4">
+    <div class="card"><div class="card-title">Starting Balance</div><div class="stat neu" id="startBal">—</div></div>
+    <div class="card"><div class="card-title">Current Balance</div><div class="stat neu" id="currBal">—</div></div>
+    <div class="card"><div class="card-title">Total P&amp;L</div><div class="stat neu" id="totalPnl">—</div></div>
+    <div class="card"><div class="card-title">Win Rate</div><div class="stat neu" id="winRate">—</div></div>
   </div>
 
-  <!-- Second row -->
-  <div class="row g-3 mb-4">
-    <div class="col-6 col-md-3"><div class="card p-3">
-      <div class="card-title">Open Positions</div>
-      <div class="stat-value neutral" id="openTrades">—</div>
-    </div></div>
-    <div class="col-6 col-md-3"><div class="card p-3">
-      <div class="card-title">Closed Trades</div>
-      <div class="stat-value neutral" id="closedTrades">—</div>
-    </div></div>
-    <div class="col-6 col-md-3"><div class="card p-3">
-      <div class="card-title">Capital Deployed</div>
-      <div class="stat-value neutral" id="deployed">—</div>
-    </div></div>
-    <div class="col-6 col-md-3"><div class="card p-3">
-      <div class="card-title">Whales Tracked</div>
-      <div class="stat-value neutral" id="whaleCount">—</div>
-    </div></div>
+  <div class="grid-4 mb">
+    <div class="card"><div class="card-title">Open Positions</div><div class="stat neu" id="openTrades">—</div></div>
+    <div class="card"><div class="card-title">Closed Trades</div><div class="stat neu" id="closedTrades">—</div></div>
+    <div class="card"><div class="card-title">Capital Deployed</div><div class="stat neu" id="deployed">—</div></div>
+    <div class="card"><div class="card-title">Whales Tracked</div><div class="stat neu" id="whaleCount">—</div></div>
   </div>
 
-  <!-- P&L chart + whale activity -->
-  <div class="row g-3 mb-4">
-    <div class="col-md-7">
-      <div class="card p-3">
-        <div class="section-title">Cumulative P&L</div>
-        <canvas id="pnlChart"></canvas>
-        <div id="noChartData" class="text-center text-muted py-4" style="display:none">
-          No closed trades yet — P&L chart will appear once trades resolve.
-        </div>
-      </div>
+  <div class="grid-2">
+    <div class="card">
+      <div class="sec">Cumulative P&amp;L</div>
+      <div id="noChartData" class="empty">No closed trades yet — chart will appear once trades resolve.</div>
     </div>
-    <div class="col-md-5">
-      <div class="card p-3" style="max-height:320px; overflow-y:auto;">
-        <div class="section-title">Recent Whale Activity</div>
-        <table class="table table-sm mb-0">
-          <thead><tr><th>Wallet</th><th>Market</th><th>Outcome</th><th>Size</th></tr></thead>
-          <tbody id="whaleBody"></tbody>
-        </table>
-      </div>
+    <div class="card scroll">
+      <div class="sec">Recent Whale Activity</div>
+      <table class="tbl"><thead><tr><th>Wallet</th><th>Market</th><th>Outcome</th><th>Size</th></tr></thead>
+      <tbody id="whaleBody"><tr><td colspan="4" class="empty">No activity yet</td></tr></tbody></table>
     </div>
   </div>
 
-  <!-- Trade history -->
-  <div class="card p-3">
-    <div class="section-title">Trade History</div>
-    <div class="table-responsive">
-      <table class="table table-sm mb-0">
-        <thead>
-          <tr>
-            <th>Date</th><th>Market</th><th>Outcome</th>
-            <th>Entry</th><th>Exit</th><th>Size</th><th>P&L</th><th>Status</th>
-          </tr>
-        </thead>
+  <div class="card mb">
+    <div class="sec">Bot Log <span style="font-size:0.68rem;color:#444">(last 100 lines)</span></div>
+    <div class="logbox" id="logBox">Loading...</div>
+  </div>
+
+  <div class="card">
+    <div class="sec">Trade History</div>
+    <div style="overflow-x:auto">
+      <table class="tbl">
+        <thead><tr><th>Date</th><th>Market</th><th>Outcome</th><th>Entry</th><th>Exit</th><th>Size</th><th>P&amp;L</th><th>Status</th></tr></thead>
         <tbody id="tradeBody"></tbody>
       </table>
-      <div id="noTrades" class="text-center text-muted py-4" style="display:none">
-        No trades logged yet. The bot will populate this table as it detects whale activity.
-      </div>
+      <div id="noTrades" class="empty">No trades logged yet. The bot will populate this as it detects whale activity.</div>
     </div>
   </div>
 
 </div>
 
 <script>
-let pnlChart = null;
-
-function fmt(n, decimals=2) {
+function fmt(n, d) {
+  d = d === undefined ? 2 : d;
   if (n === null || n === undefined) return '—';
-  return parseFloat(n).toFixed(decimals);
+  return parseFloat(n).toFixed(d);
 }
 function fmtUsd(n) {
   if (n === null || n === undefined) return '—';
-  const v = parseFloat(n);
-  return (v >= 0 ? '+' : '') + '$' + Math.abs(v).toFixed(2);
+  var v = parseFloat(n);
+  return (v >= 0 ? '+$' : '-$') + Math.abs(v).toFixed(2);
 }
-function colorClass(n) {
-  if (n === null || n === undefined) return 'neutral';
-  return parseFloat(n) >= 0 ? 'positive' : 'negative';
+function col(n) {
+  if (n === null || n === undefined) return 'neu';
+  return parseFloat(n) >= 0 ? 'pos' : 'neg';
 }
 function shortDate(s) {
   if (!s) return '—';
-  return s.replace('T', ' ').substring(0, 16);
+  return s.replace('T',' ').substring(0,16);
+}
+function esc(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
 
-async function loadSummary() {
-  const d = await fetch('/api/summary').then(r => r.json());
-
-  document.getElementById('modeBadge').className = 'pill ' + (d.paper_mode ? 'badge-paper' : 'badge-live');
-  document.getElementById('modeBadge').textContent = d.paper_mode ? 'PAPER TRADE' : 'LIVE TRADE';
-
-  document.getElementById('startBal').textContent = '$' + fmt(d.starting_balance);
-
-  const currEl = document.getElementById('currBal');
-  currEl.textContent = '$' + fmt(d.current_balance);
-  currEl.className = 'stat-value ' + colorClass(d.current_balance - d.starting_balance);
-
-  const pnlEl = document.getElementById('totalPnl');
-  pnlEl.textContent = fmtUsd(d.total_pnl);
-  pnlEl.className = 'stat-value ' + colorClass(d.total_pnl);
-
-  document.getElementById('winRate').textContent = d.win_rate + '%';
-  document.getElementById('openTrades').textContent = d.open_trades;
-  document.getElementById('closedTrades').textContent = d.closed_trades;
-  document.getElementById('deployed').textContent = '$' + fmt(d.deployed_usdc);
-  document.getElementById('whaleCount').textContent = d.whale_count;
+function loadSummary() {
+  fetch('/api/summary').then(function(r){ return r.json(); }).then(function(d) {
+    var paper = d.paper_mode;
+    var badge = document.getElementById('modeBadge');
+    badge.className = 'badge ' + (paper ? 'badge-paper' : 'badge-live');
+    badge.textContent = paper ? 'PAPER TRADE' : 'LIVE TRADE';
+    document.getElementById('startBal').textContent = '$' + fmt(d.starting_balance);
+    var cb = document.getElementById('currBal');
+    cb.textContent = '$' + fmt(d.current_balance);
+    cb.className = 'stat ' + col(d.current_balance - d.starting_balance);
+    var pnl = document.getElementById('totalPnl');
+    pnl.textContent = fmtUsd(d.total_pnl);
+    pnl.className = 'stat ' + col(d.total_pnl);
+    document.getElementById('winRate').textContent = d.win_rate + '%';
+    document.getElementById('openTrades').textContent = d.open_trades;
+    document.getElementById('closedTrades').textContent = d.closed_trades;
+    document.getElementById('deployed').textContent = '$' + fmt(d.deployed_usdc);
+    document.getElementById('whaleCount').textContent = d.whale_count;
+  }).catch(function(e){ console.error('summary:', e); });
 }
 
-async function loadTrades() {
-  const rows = await fetch('/api/trades').then(r => r.json());
-  const tbody = document.getElementById('tradeBody');
-  const noTrades = document.getElementById('noTrades');
-
-  if (!rows.length) { tbody.innerHTML = ''; noTrades.style.display = ''; return; }
-  noTrades.style.display = 'none';
-
-  tbody.innerHTML = rows.map(r => {
-    const pnl = r.pnl_usdc;
-    const pnlStr = pnl !== null ? `<span class="${colorClass(pnl)}">${fmtUsd(pnl)}</span>` : '<span class="neutral">—</span>';
-    const statusPill = r.status === 'OPEN'
-      ? '<span class="pill pill-open">Open</span>'
-      : (pnl >= 0 ? '<span class="pill pill-win">Win</span>' : '<span class="pill pill-loss">Loss</span>');
-    return `<tr>
-      <td>${shortDate(r.placed_at)}</td>
-      <td><div class="market-q" title="${r.market_question || r.market_id}">${r.market_question || r.market_id}</div></td>
-      <td>${r.outcome}</td>
-      <td>${fmt(r.entry_price, 3)}</td>
-      <td>${r.exit_price !== null ? fmt(r.exit_price, 3) : '—'}</td>
-      <td>$${fmt(r.size_usdc)}</td>
-      <td>${pnlStr}</td>
-      <td>${statusPill}</td>
-    </tr>`;
-  }).join('');
+function loadTrades() {
+  fetch('/api/trades').then(function(r){ return r.json(); }).then(function(rows) {
+    var tbody = document.getElementById('tradeBody');
+    var noTrades = document.getElementById('noTrades');
+    if (!rows.length) { tbody.innerHTML = ''; noTrades.style.display = ''; return; }
+    noTrades.style.display = 'none';
+    tbody.innerHTML = rows.map(function(r) {
+      var pnl = r.pnl_usdc;
+      var pnlHtml = pnl !== null ? '<span class="'+col(pnl)+'">'+fmtUsd(pnl)+'</span>' : '<span class="neu">—</span>';
+      var pill = r.status === 'OPEN' ? '<span class="pill p-open">Open</span>'
+               : (pnl >= 0 ? '<span class="pill p-win">Win</span>' : '<span class="pill p-loss">Loss</span>');
+      return '<tr><td>'+shortDate(r.placed_at)+'</td>'
+        +'<td><span class="mq" title="'+esc(r.market_question||r.market_id)+'">'+esc(r.market_question||r.market_id)+'</span></td>'
+        +'<td>'+esc(r.outcome)+'</td>'
+        +'<td>'+fmt(r.entry_price,3)+'</td>'
+        +'<td>'+(r.exit_price !== null ? fmt(r.exit_price,3) : '—')+'</td>'
+        +'<td>$'+fmt(r.size_usdc)+'</td>'
+        +'<td>'+pnlHtml+'</td>'
+        +'<td>'+pill+'</td></tr>';
+    }).join('');
+  }).catch(function(e){ console.error('trades:', e); });
 }
 
-async function loadWhales() {
-  const rows = await fetch('/api/whales').then(r => r.json());
-  const tbody = document.getElementById('whaleBody');
-  if (!rows.length) { tbody.innerHTML = '<tr><td colspan="4" class="text-muted text-center">No activity yet</td></tr>'; return; }
-  tbody.innerHTML = rows.map(r => `<tr>
-    <td><span class="whale-wallet">${r.wallet_short}</span></td>
-    <td><div class="market-q" title="${r.market_question}">${r.market_question || '—'}</div></td>
-    <td>${r.outcome}</td>
-    <td class="positive">$${fmt(r.size_usdc)}</td>
-  </tr>`).join('');
+function loadWhales() {
+  fetch('/api/whales').then(function(r){ return r.json(); }).then(function(rows) {
+    var tbody = document.getElementById('whaleBody');
+    if (!rows.length) { tbody.innerHTML = '<tr><td colspan="4" class="empty">No activity yet</td></tr>'; return; }
+    tbody.innerHTML = rows.map(function(r) {
+      return '<tr>'
+        +'<td><span class="mono">'+esc(r.wallet_short)+'</span></td>'
+        +'<td><span class="mq" title="'+esc(r.market_question)+'">'+esc(r.market_question||'—')+'</span></td>'
+        +'<td>'+esc(r.outcome)+'</td>'
+        +'<td class="pos">$'+fmt(r.size_usdc)+'</td></tr>';
+    }).join('');
+  }).catch(function(e){ console.error('whales:', e); });
 }
 
-async function loadChart() {
-  const rows = await fetch('/api/pnl_over_time').then(r => r.json());
-  const canvas = document.getElementById('pnlChart');
-  const noData = document.getElementById('noChartData');
-
-  if (!rows.length) { canvas.style.display = 'none'; noData.style.display = ''; return; }
-  canvas.style.display = '';
-  noData.style.display = 'none';
-
-  const labels = rows.map(r => shortDate(r.date));
-  const data   = rows.map(r => r.cumulative_pnl);
-  const lastVal = data[data.length - 1] || 0;
-  const color  = lastVal >= 0 ? '#00c49a' : '#ff4d6d';
-
-  if (pnlChart) { pnlChart.destroy(); }
-  pnlChart = new Chart(canvas.getContext('2d'), {
-    type: 'line',
-    data: {
-      labels,
-      datasets: [{
-        label: 'Cumulative P&L (USDC)',
-        data,
-        borderColor: color,
-        backgroundColor: color + '22',
-        borderWidth: 2,
-        pointRadius: 3,
-        fill: true,
-        tension: 0.3,
-      }]
-    },
-    options: {
-      responsive: true,
-      plugins: { legend: { display: false } },
-      scales: {
-        x: { ticks: { color: '#555', maxTicksLimit: 6 }, grid: { color: '#2a2d3a' } },
-        y: { ticks: { color: '#555' }, grid: { color: '#2a2d3a' } }
-      }
-    }
+function loadLog() {
+  fetch('/api/log').then(function(r){ return r.json(); }).then(function(d) {
+    var box = document.getElementById('logBox');
+    box.innerHTML = d.lines.map(function(line) {
+      var cls = (line.indexOf('[ERROR]') >= 0 || line.indexOf('[CRITICAL]') >= 0) ? 'le'
+              : line.indexOf('[WARNING]') >= 0 ? 'lw' : 'li';
+      return '<span class="'+cls+'">'+esc(line)+'</span>';
+    }).join('\\n');
+    box.scrollTop = box.scrollHeight;
+  }).catch(function(e){
+    document.getElementById('logBox').textContent = 'Error: ' + e;
   });
 }
 
-async function refresh() {
-  await Promise.all([loadSummary(), loadTrades(), loadWhales(), loadChart()]);
+function refresh() {
+  loadSummary();
+  loadTrades();
+  loadWhales();
+  loadLog();
   document.getElementById('lastRefresh').textContent = new Date().toLocaleTimeString();
 }
 
@@ -388,7 +355,7 @@ setInterval(refresh, 30000);
 
 @app.route("/")
 def dashboard():
-    return render_template_string(DASHBOARD_HTML)
+    return Response(DASHBOARD_HTML, mimetype='text/html')
 
 
 if __name__ == "__main__":
