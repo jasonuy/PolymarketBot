@@ -3724,3 +3724,20 @@ Traceback (most recent call last):
 2026-04-11 02:02:19,498 [WARNING] wallet_monitor: WATCHED_WALLETS is empty. Add wallet addresses to config.py to start monitoring.
 2026-04-11 02:02:31,208 [INFO] __main__: ── Scanning wallets (09:02:31 UTC) ──
 2026-04-11 02:02:31,210 [WARNING] wallet_monitor: No wallets to monitor. Auto-discovery may have failed.
+2026-04-11 02:02:43,218 [INFO] __main__: ── Scanning wallets (09:02:43 UTC) ──
+2026-04-11 02:02:43,220 [ERROR] __main__: Unexpected error in main loop: Could not find a suitable TLS CA certificate bundle, invalid path: /Users/jasonuy/Polymarket/venv/lib/python3.13/site-packages/certifi/cacert.pem
+Traceback (most recent call last):
+  File [35m"/Users/jasonuy/Polymarket/bot.py"[0m, line [35m194[0m, in [35mmain[0m
+  File [35m"/Users/jasonuy/Polymarket/bot.py"[0m, line [35m127[0m, in [35mrun_once[0m
+  File [35m"/Users/jasonuy/Polymarket/wallet_monitor.py"[0m, line [35m90[0m, in [35mscan_wallets[0m
+  File [35m"/Users/jasonuy/Polymarket/api_client.py"[0m, line [35m38[0m, in [35mget_wallet_activity[0m
+  File [35m"/Users/jasonuy/Polymarket/api_client.py"[0m, line [35m23[0m, in [35m_get[0m
+  File [35m"/Users/jasonuy/Polymarket/venv/lib/python3.13/site-packages/requests/sessions.py"[0m, line [35m605[0m, in [35mget[0m
+  File [35m"/Users/jasonuy/Polymarket/venv/lib/python3.13/site-packages/requests/sessions.py"[0m, line [35m592[0m, in [35mrequest[0m
+  File [35m"/Users/jasonuy/Polymarket/venv/lib/python3.13/site-packages/requests/sessions.py"[0m, line [35m706[0m, in [35msend[0m
+  File [35m"/Users/jasonuy/Polymarket/venv/lib/python3.13/site-packages/requests/adapters.py"[0m, line [35m617[0m, in [35msend[0m
+  File [35m"/Users/jasonuy/Polymarket/venv/lib/python3.13/site-packages/requests/adapters.py"[0m, line [35m304[0m, in [35mcert_verify[0m
+[1;35mOSError[0m: [35mCould not find a suitable TLS CA certificate bundle, invalid path: /Users/jasonuy/Polymarket/venv/lib/python3.13/site-packages/certifi/cacert.pem[0m
+2026-04-11 02:02:43,221 [WARNING] notifier: Telegram send failed: Could not find a suitable TLS CA certificate bundle, invalid path: /Users/jasonuy/Polymarket/venv/lib/python3.13/site-packages/certifi/cacert.pem
+2026-04-11 02:02:49,302 [INFO] __main__: ── Scanning wallets (09:02:49 UTC) ──
+2026-04-11 02:02:49,305 [WARNING] wallet_monitor: WATCHED_WALLETS is empty. Add wallet addresses to config.py to start monitoring.
