@@ -104,6 +104,8 @@ def execute_copy_trade(trade: WhaleTrade, size_usdc: float,
     copy_id = database.record_copy_trade(
         whale_trade_id=whale_trade_id,
         market_id=trade.market_id,
+        market_question=trade.market_question,
+        token_id=trade.token_id,
         outcome=trade.outcome,
         side="BUY",
         price=trade.price,

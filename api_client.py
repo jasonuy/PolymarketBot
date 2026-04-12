@@ -53,8 +53,15 @@ def get_wallet_positions(wallet: str) -> list[dict]:
 
 def get_market(condition_id: str) -> Optional[dict]:
     """Fetch metadata for a single market by condition_id."""
-    data = _get(f"{GAMMA_API}/markets/{condition_id}")
-    return data if isinstance(data, dict) else None
+    data = _get(f"{GAMMA_API}/markets", params={"conditionId": condition_id})
+    if isinstance(data, list):
+        return data[0] if data else None
+    if isinstance(data, dict):
+        markets = data.get("markets")
+        if isinstance(markets, list):
+            return markets[0] if markets else None
+        return data
+    return None
 
 
 def get_markets(active: bool = True, limit: int = 100) -> list[dict]:
@@ -101,6 +108,43 @@ def get_spread(token_id: str) -> Optional[float]:
             return (best_ask - best_bid) / best_ask
     except (KeyError, IndexError, ValueError, TypeError):
         pass
+    return None
+
+
+def get_market_resolution(condition_id: str, outcome: str) -> Optional[float]:
+    """
+    Returns the resolution price for a specific outcome in a closed market.
+    Returns 1.0 if the outcome won, 0.0 if it lost, None if unresolved/unknown.
+
+    Uses the CLOB /markets/{condition_id} endpoint which returns a 'tokens' array
+    with 'winner' booleans and 'closed' flag for resolved markets.
+
+    outcome: the string outcome label, e.g. "Yes" / "No" / "Over" / "Under",
+             or a numeric index string "0" / "1".
+    """
+    data = _get(f"{CLOB_HOST}/markets/{condition_id}")
+    if not data or not isinstance(data, dict):
+        return None
+
+    # Only report resolution when the market is fully closed
+    if not data.get("closed"):
+        return None
+
+    tokens = data.get("tokens") or []
+
+    # Match by outcome label (case-insensitive)
+    for token in tokens:
+        if str(token.get("outcome", "")).strip().lower() == str(outcome).strip().lower():
+            return 1.0 if token.get("winner") else 0.0
+
+    # Fallback: treat outcome as a positional index (0 = first token, etc.)
+    try:
+        idx = int(outcome)
+        if 0 <= idx < len(tokens):
+            return 1.0 if tokens[idx].get("winner") else 0.0
+    except (ValueError, TypeError):
+        pass
+
     return None
 
 

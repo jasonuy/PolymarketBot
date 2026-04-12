@@ -39,6 +39,8 @@ def init_db() -> None:
                 whale_trade_id  INTEGER REFERENCES whale_trades(id),
                 placed_at       TEXT    NOT NULL,
                 market_id       TEXT    NOT NULL,
+                market_question TEXT,
+                token_id        TEXT,
                 outcome         TEXT    NOT NULL,
                 side            TEXT    NOT NULL,
                 price           REAL    NOT NULL,
@@ -56,6 +58,17 @@ def init_db() -> None:
                 seen_at TEXT NOT NULL
             );
         """)
+    # Migrate existing databases: add columns if they don't exist yet
+    with get_conn() as conn:
+        for col_def in [
+            ("copy_trades", "market_question", "TEXT"),
+            ("copy_trades", "token_id",        "TEXT"),
+        ]:
+            try:
+                conn.execute(f"ALTER TABLE {col_def[0]} ADD COLUMN {col_def[1]} {col_def[2]}")
+            except sqlite3.OperationalError:
+                pass  # column already exists
+
     logger.info("Database initialised at %s", DB_PATH)
 
 
@@ -76,15 +89,17 @@ def record_whale_trade(wallet: str, market_id: str, market_question: str,
 
 def record_copy_trade(whale_trade_id: int, market_id: str, outcome: str,
                       side: str, price: float, size_usdc: float,
-                      order_id: str = "", paper_trade: bool = True) -> int:
+                      order_id: str = "", paper_trade: bool = True,
+                      token_id: str = "", market_question: str = "") -> int:
     """Insert a copy trade record. Returns the new row id."""
     with get_conn() as conn:
         cur = conn.execute(
             """INSERT INTO copy_trades
-               (whale_trade_id, placed_at, market_id, outcome, side, price, size_usdc, order_id, paper_trade)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (whale_trade_id, datetime.now(UTC).isoformat(), market_id, outcome,
-             side, price, size_usdc, order_id, 1 if paper_trade else 0)
+               (whale_trade_id, placed_at, market_id, market_question, token_id,
+                outcome, side, price, size_usdc, order_id, paper_trade)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (whale_trade_id, datetime.now(UTC).isoformat(), market_id, market_question,
+             token_id, outcome, side, price, size_usdc, order_id, 1 if paper_trade else 0)
         )
         return cur.lastrowid
 
@@ -113,11 +128,12 @@ def mark_tx_seen(tx_hash: str) -> None:
         )
 
 
-def get_open_positions() -> list:
+def get_open_positions() -> list[dict]:
     with get_conn() as conn:
-        return conn.execute(
+        rows = conn.execute(
             "SELECT * FROM copy_trades WHERE status='OPEN'"
         ).fetchall()
+        return [dict(r) for r in rows]
 
 
 def get_pnl_summary() -> dict:

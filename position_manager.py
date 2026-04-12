@@ -18,6 +18,7 @@ from config import (
     MAX_TRADE_USDC,
     MAX_OPEN_POSITIONS,
     MAX_SPREAD_PCT,
+    PAPER_TRADE,
 )
 
 logger = logging.getLogger(__name__)
@@ -33,7 +34,10 @@ def _already_in_market(market_id: str) -> bool:
 
 
 def _check_liquidity(token_id: str) -> bool:
-    """Returns True if the market is liquid enough to enter."""
+    """Returns True if the market is liquid enough to enter.
+    Skipped in paper trade mode — no real order is being placed."""
+    if PAPER_TRADE:
+        return True
     spread = api_client.get_spread(token_id)
     if spread is None:
         logger.warning("Could not fetch spread for token %s — skipping", token_id)

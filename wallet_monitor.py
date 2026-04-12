@@ -45,18 +45,20 @@ def _parse_activity(raw: dict, wallet: str) -> WhaleTrade | None:
     try:
         tx_hash  = raw.get("transactionHash") or raw.get("id") or ""
         side     = (raw.get("side") or raw.get("type") or "").upper()
-        outcome  = raw.get("outcomeIndex") or raw.get("outcome") or ""
-        price    = float(raw.get("price") or raw.get("usdcSize", 0) or 0)
-        size     = float(raw.get("size") or raw.get("usdcSize") or 0)
-        token_id = raw.get("assetId") or raw.get("tokenId") or ""
+        outcome  = raw.get("outcome") or str(raw.get("outcomeIndex") or "")
+        price    = float(raw.get("price") or 0)
+        size     = float(raw.get("size") or 0)
+        # API returns token id under "asset" field
+        token_id = raw.get("asset") or raw.get("assetId") or raw.get("tokenId") or ""
 
         # Try to infer USDC size — some responses give shares, others USDC
         usdc_size = float(raw.get("usdcSize") or (price * size) or 0)
 
-        market_id       = raw.get("market") or raw.get("conditionId") or ""
+        # API returns market id under "conditionId"
+        market_id       = raw.get("conditionId") or raw.get("market") or ""
         market_question = raw.get("title") or raw.get("question") or market_id
 
-        if not all([tx_hash, side, market_id, token_id]):
+        if not all([tx_hash, market_id]):
             return None
 
         return WhaleTrade(
@@ -90,8 +92,11 @@ def scan_wallets() -> Iterator[WhaleTrade]:
         activity = api_client.get_wallet_activity(wallet, limit=20)
 
         for raw in activity:
+            tx_hash = raw.get("transactionHash") or raw.get("id") or ""
             trade = _parse_activity(raw, wallet)
             if trade is None:
+                if tx_hash:
+                    database.mark_tx_seen(tx_hash)
                 continue
 
             # Skip already-seen transactions

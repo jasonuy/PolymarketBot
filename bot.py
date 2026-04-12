@@ -24,6 +24,7 @@ from datetime import datetime, UTC
 
 import database
 import notifier
+import api_client
 import wallet_monitor
 import position_manager
 import trade_executor
@@ -33,6 +34,8 @@ from config import (
     POLL_INTERVAL,
     WATCHED_WALLETS,
     MAX_TRADE_USDC,
+    STOP_LOSS_PCT,
+    TAKE_PROFIT_PCT,
 )
 
 # Runtime wallet list — starts from config, topped up by auto-discovery
@@ -121,9 +124,74 @@ def process_whale_trade(trade: wallet_monitor.WhaleTrade) -> None:
         )
 
 
+def check_open_positions() -> None:
+    """
+    Check every open position for:
+      1. Market resolution — GAMMA API reports the market as closed with a final price.
+      2. Take-profit      — current CLOB price rose >= TAKE_PROFIT_PCT from entry.
+      3. Stop-loss        — current CLOB price dropped >= STOP_LOSS_PCT from entry.
+    Closes any position that meets a criterion and records P&L.
+    """
+    positions = database.get_open_positions()
+    if not positions:
+        return
+
+    logger.info("Checking %d open position(s) for exit signals...", len(positions))
+
+    for pos in positions:
+        pos_id          = pos["id"]
+        entry_price     = pos["price"]
+        size_usdc       = pos["size_usdc"]
+        outcome         = pos["outcome"]
+        market_id       = pos["market_id"]
+        token_id        = pos.get("token_id") or ""
+        market_question = pos.get("market_question") or market_id
+
+        close_price = None
+        close_reason = None
+
+        # 1. Live price check via CLOB — enables stop-loss / take-profit
+        if token_id and entry_price > 0:
+            current_price = api_client.get_market_price(token_id)
+            if current_price is not None:
+                change_pct = (current_price - entry_price) / entry_price
+                if change_pct <= -STOP_LOSS_PCT:
+                    close_price  = current_price
+                    close_reason = f"Stop-loss ({change_pct:+.1%} from entry)"
+                elif change_pct >= TAKE_PROFIT_PCT:
+                    close_price  = current_price
+                    close_reason = f"Take-profit ({change_pct:+.1%} from entry)"
+
+        # 2. Market resolution check via GAMMA API
+        if close_price is None and market_id:
+            resolution = api_client.get_market_resolution(market_id, outcome)
+            if resolution is not None:
+                close_price  = resolution
+                result       = "WIN" if resolution >= 0.5 else "LOSS"
+                close_reason = f"Market resolved — {result}"
+
+        if close_price is not None:
+            pnl = position_manager.calculate_pnl(entry_price, close_price, size_usdc, "BUY")
+            database.close_trade(pos_id, close_price, pnl)
+            logger.info(
+                "Position closed | market=%s outcome=%s entry=%.3f exit=%.3f pnl=%+.2f | %s",
+                market_question[:40], outcome, entry_price, close_price, pnl, close_reason,
+            )
+            notifier.notify_trade_closed(
+                question=market_question,
+                outcome=outcome,
+                entry_price=entry_price,
+                close_price=close_price,
+                size_usdc=size_usdc,
+                pnl=pnl,
+                reason=close_reason,
+            )
+
+
 def run_once() -> None:
     """Single scan cycle — called every POLL_INTERVAL seconds."""
     logger.info("── Scanning wallets (%s) ──", datetime.now(UTC).strftime("%H:%M:%S UTC"))
+    check_open_positions()
     for trade in wallet_monitor.scan_wallets():
         try:
             process_whale_trade(trade)

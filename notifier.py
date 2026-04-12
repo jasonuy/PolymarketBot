@@ -73,6 +73,20 @@ def notify_startup(paper_mode: bool, wallet_count: int) -> None:
     )
 
 
+def notify_trade_closed(question: str, outcome: str, entry_price: float,
+                        close_price: float, size_usdc: float,
+                        pnl: float, reason: str) -> None:
+    emoji = "✅" if pnl >= 0 else "🔴"
+    _send(
+        f"{emoji} <b>Position closed</b>\n"
+        f"Market: {question[:60]}\n"
+        f"Outcome: {outcome}\n"
+        f"Entry: {entry_price:.3f}  →  Exit: {close_price:.3f}\n"
+        f"Size: ${size_usdc:,.2f}  |  P&L: {pnl:+.2f} USDC\n"
+        f"Reason: {reason}"
+    )
+
+
 def notify_pnl_summary(summary: dict) -> None:
     _send(
         f"📊 <b>P&L Summary</b>\n"

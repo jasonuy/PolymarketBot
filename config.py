@@ -23,20 +23,18 @@ PAPER_TRADE      = os.getenv("PAPER_TRADE", "true").lower() == "true"
 POLL_INTERVAL    = int(os.getenv("POLL_INTERVAL_SECONDS", "60"))
 
 # ── Risk management ───────────────────────────────────────────────────────────
-# Maximum fraction of bankroll to risk on a single trade (Kelly-inspired)
-MAX_POSITION_FRACTION = 0.05       # 5% of bankroll per trade
+MAX_POSITION_FRACTION = float(os.getenv("MAX_POSITION_FRACTION", "0.05"))
+MAX_TRADE_USDC        = float(os.getenv("MAX_TRADE_USDC",        "50.0"))
+MIN_WHALE_TRADE_USDC  = float(os.getenv("MIN_WHALE_TRADE_USDC",  "5.0"))
+MAX_OPEN_POSITIONS    = int(os.getenv("MAX_OPEN_POSITIONS",       "10"))
+MAX_SPREAD_PCT        = float(os.getenv("MAX_SPREAD_PCT",         "0.10"))
 
-# Absolute max USDC per single trade (hard cap)
-MAX_TRADE_USDC = 50.0
-
-# Minimum USDC value of a whale trade before we consider copying it
-MIN_WHALE_TRADE_USDC = 100.0
-
-# Maximum number of open positions at once
-MAX_OPEN_POSITIONS = 10
-
-# Minimum market liquidity (spread %) to enter — avoids illiquid traps
-MAX_SPREAD_PCT = 0.10              # skip if bid/ask spread > 10%
+# ── Exit thresholds ───────────────────────────────────────────────────────────
+# Close a position early if price moves this far from entry (as a fraction).
+# e.g. 0.50 = close if price drops 50% from entry (stop-loss)
+#      0.80 = close if price rises 80% from entry (take-profit)
+STOP_LOSS_PCT   = float(os.getenv("STOP_LOSS_PCT",   "0.50"))
+TAKE_PROFIT_PCT = float(os.getenv("TAKE_PROFIT_PCT", "0.80"))
 
 # ── Wallets to follow ─────────────────────────────────────────────────────────
 # Add wallet addresses you want to copy-trade.
