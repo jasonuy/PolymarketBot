@@ -36,6 +36,8 @@ from config import (
     MAX_TRADE_USDC,
     STOP_LOSS_PCT,
     TAKE_PROFIT_PCT,
+    MIN_TRADES_BEFORE_FILTER,
+    MIN_WIN_RATE_TO_FOLLOW,
 )
 
 # Runtime wallet list — starts from config, topped up by auto-discovery
@@ -74,6 +76,25 @@ logger = logging.getLogger(__name__)
 
 def process_whale_trade(trade: wallet_monitor.WhaleTrade) -> None:
     """Handle a single newly detected whale trade."""
+
+    # ── Wallet performance filter ─────────────────────────────────────────────
+    stats = database.get_wallet_stats(trade.wallet)
+    if stats and stats["total_copies"] >= MIN_TRADES_BEFORE_FILTER:
+        win_rate = stats["wins"] / stats["total_copies"]
+        if win_rate < MIN_WIN_RATE_TO_FOLLOW:
+            logger.warning(
+                "Wallet %s...  muted — win rate %.0f%% (%d W / %d L, P&L %+.2f) below %.0f%% threshold",
+                trade.wallet[:10], win_rate * 100,
+                stats["wins"], stats["losses"], stats["total_pnl"],
+                MIN_WIN_RATE_TO_FOLLOW * 100,
+            )
+            notifier.notify_skipped(
+                trade.market_question,
+                f"Wallet {trade.wallet[:10]}... muted — "
+                f"{win_rate:.0%} win rate on {stats['total_copies']} trades "
+                f"(P&L {stats['total_pnl']:+.2f} USDC)",
+            )
+            return
 
     # Record the whale trade regardless of whether we copy it
     whale_id = database.record_whale_trade(
@@ -172,7 +193,22 @@ def check_open_positions() -> None:
 
         if close_price is not None:
             pnl = position_manager.calculate_pnl(entry_price, close_price, size_usdc, "BUY")
-            database.close_trade(pos_id, close_price, pnl)
+            database.close_trade(pos_id, close_price, pnl, close_reason or "")
+
+            source_wallet = pos.get("source_wallet") or ""
+            if source_wallet:
+                database.update_wallet_stats(source_wallet, pnl)
+                stats = database.get_wallet_stats(source_wallet)
+                if stats and stats["total_copies"] >= MIN_TRADES_BEFORE_FILTER:
+                    win_rate = stats["wins"] / stats["total_copies"]
+                    if win_rate < MIN_WIN_RATE_TO_FOLLOW:
+                        logger.warning(
+                            "Wallet %s... now below %.0f%% win rate threshold "
+                            "(%.0f%% — %d W / %d L). Future signals will be skipped.",
+                            source_wallet[:10], MIN_WIN_RATE_TO_FOLLOW * 100,
+                            win_rate * 100, stats["wins"], stats["losses"],
+                        )
+
             logger.info(
                 "Position closed | market=%s outcome=%s entry=%.3f exit=%.3f pnl=%+.2f | %s",
                 market_question[:40], outcome, entry_price, close_price, pnl, close_reason,
@@ -255,10 +291,18 @@ def main() -> None:
     notifier.notify_startup(paper_mode=PAPER_TRADE, wallet_count=len(wallets))
 
     cycle = 0
+    _last_snapshot_date = ""
+
     while True:
         try:
             run_once()
             cycle += 1
+
+            # Daily stats snapshot — once per UTC calendar day
+            today = datetime.now(UTC).strftime("%Y-%m-%d")
+            if today != _last_snapshot_date:
+                database.snapshot_daily_stats()
+                _last_snapshot_date = today
 
             # Print P&L summary every 10 cycles
             if cycle % 10 == 0:

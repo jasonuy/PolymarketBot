@@ -36,6 +36,12 @@ MAX_SPREAD_PCT        = float(os.getenv("MAX_SPREAD_PCT",         "0.10"))
 STOP_LOSS_PCT   = float(os.getenv("STOP_LOSS_PCT",   "0.50"))
 TAKE_PROFIT_PCT = float(os.getenv("TAKE_PROFIT_PCT", "0.80"))
 
+# ── Wallet performance filtering ─────────────────────────────────────────────
+# After MIN_TRADES_BEFORE_FILTER closed trades from a wallet, skip future signals
+# if the wallet's win rate falls below MIN_WIN_RATE_TO_FOLLOW.
+MIN_TRADES_BEFORE_FILTER = int(os.getenv("MIN_TRADES_BEFORE_FILTER", "5"))
+MIN_WIN_RATE_TO_FOLLOW   = float(os.getenv("MIN_WIN_RATE_TO_FOLLOW",  "0.45"))
+
 # ── Wallets to follow ─────────────────────────────────────────────────────────
 # Add wallet addresses you want to copy-trade.
 # Find top traders at polymarket.com/leaderboard

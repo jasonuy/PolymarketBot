@@ -32,6 +32,7 @@ HEADERS = {
 # Used only if the leaderboard page cannot be reached.
 # Update periodically by visiting polymarket.com/leaderboard.
 SEED_WALLETS = [
+    "0x492442eab586f242b53bda933fd5de859c8a3782",  # #1 leaderboard — $6.4M/month
     "0x02227b8f5a9636e895607edd3185ed6ee5598ff7",
     "0xefbc5fec8d7b0acdc8911bdd9a98d6964308f9a2",
     "0xc2e7800b5af46e6093872b177b7a5e7f0563be51",
@@ -68,9 +69,11 @@ def _scrape_leaderboard(n: int) -> list[str]:
             seen.add(lower)
             unique.append(lower)
 
-    # The very first addresses on the page tend to be contract/system addresses.
-    # Skip the first one which is usually a platform contract.
-    wallets = unique[1:n + 1] if len(unique) > 1 else unique[:n]
+    # The first few addresses on the page are often platform/contract addresses
+    # (very short hex strings or known contracts), not trader wallets.
+    # Filter them out by checking they appear in the leaderboard context
+    # rather than blindly skipping index 0 (which could be the #1 trader).
+    wallets = unique[:n]
     return wallets
 
 

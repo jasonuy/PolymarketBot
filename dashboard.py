@@ -16,6 +16,7 @@ import os
 import subprocess
 import sys
 import time
+from datetime import datetime, timedelta, timezone
 from config import DB_PATH, PAPER_TRADE, MAX_TRADE_USDC
 
 LOG_PATH  = "bot.log"
@@ -259,6 +260,13 @@ def api_insights():
     })
 
 
+@app.route("/api/stats")
+def api_stats():
+    """Full stats report for nightly optimization sessions."""
+    import database as _db
+    return jsonify(_db.get_stats_report())
+
+
 @app.route("/api/pnl_over_time")
 def api_pnl_over_time():
     rows = query("""
@@ -270,6 +278,43 @@ def api_pnl_over_time():
         ORDER BY closed_at
     """)
     return jsonify(rows)
+
+
+@app.route("/api/balance_history")
+def api_balance_history():
+    period = request.args.get("period", "days")
+    now = datetime.now(timezone.utc)
+
+    if period == "hours":
+        buckets = [now - timedelta(hours=i) for i in range(24, -1, -1)]
+        fmt = lambda dt: dt.strftime("%H:%M")
+    elif period == "weeks":
+        buckets = [now - timedelta(weeks=i) for i in range(11, -1, -1)]
+        fmt = lambda dt: dt.strftime("%b %d")
+    else:  # days
+        buckets = [now - timedelta(days=i) for i in range(29, -1, -1)]
+        fmt = lambda dt: dt.strftime("%b %d")
+
+    trades = query("""
+        SELECT closed_at, pnl_usdc
+        FROM copy_trades
+        WHERE status='CLOSED' AND closed_at IS NOT NULL
+        ORDER BY closed_at
+    """)
+
+    result = []
+    for bucket in buckets:
+        bucket_iso = bucket.isoformat()
+        cumulative_pnl = sum(
+            t["pnl_usdc"] for t in trades
+            if t["pnl_usdc"] is not None and t["closed_at"] <= bucket_iso
+        )
+        result.append({
+            "label": fmt(bucket),
+            "balance": round(STARTING_BANKROLL + cumulative_pnl, 2),
+        })
+
+    return jsonify(result)
 
 
 # ── Documentation HTML ────────────────────────────────────────────────────────
@@ -621,6 +666,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Polymarket Copy-Bot Dashboard</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
     body { background: #0f1117; color: #e0e0e0; font-family: 'Segoe UI', Arial, sans-serif; font-size: 14px; }
@@ -693,6 +739,13 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     .cfg-status { font-size: 0.78rem; }
     .cfg-warn { color: #ffd700; font-size: 0.72rem; margin-top: 10px; padding: 8px 10px;
                 background: #2a2500; border-radius: 6px; border-left: 3px solid #ffd700; }
+    /* Period toggle */
+    .period-toggle { display: flex; gap: 4px; }
+    .period-btn { background: #13151f; border: 1px solid #2a2d3a; color: #8b8fa8;
+                  border-radius: 6px; padding: 4px 14px; font-size: 0.75rem; font-weight: 600;
+                  cursor: pointer; transition: background 0.15s, color 0.15s; }
+    .period-btn:hover { background: #22253a; color: #e0e0e0; }
+    .period-btn.active { background: #1a56db; border-color: #1a56db; color: #fff; }
   </style>
 </head>
 <body>
@@ -760,8 +813,16 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 
   <div class="grid-2">
     <div class="card">
-      <div class="sec">Cumulative P&amp;L</div>
-      <div id="noChartData" class="empty">No closed trades yet — chart will appear once trades resolve.</div>
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
+        <span class="sec" style="margin-bottom:0">Account Balance</span>
+        <div class="period-toggle">
+          <button class="period-btn active" id="btn-hours" onclick="setPeriod('hours')">Hours</button>
+          <button class="period-btn" id="btn-days" onclick="setPeriod('days')">Days</button>
+          <button class="period-btn" id="btn-weeks" onclick="setPeriod('weeks')">Weeks</button>
+        </div>
+      </div>
+      <canvas id="balanceChart" height="160"></canvas>
+      <div id="noBalanceData" class="empty" style="display:none">No closed trades yet — chart will appear once trades resolve.</div>
     </div>
     <div class="card scroll">
       <div class="sec">Recent Whale Activity</div>
@@ -894,6 +955,107 @@ function shortDate(s) {
 }
 function esc(s) {
   return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+// ── Balance history chart ─────────────────────────────────────────────────────
+
+var balanceChart = null;
+var currentPeriod = 'hours';
+
+function setPeriod(period) {
+  currentPeriod = period;
+  ['hours', 'days', 'weeks'].forEach(function(p) {
+    document.getElementById('btn-' + p).classList.toggle('active', p === period);
+  });
+  loadBalanceHistory();
+}
+
+function loadBalanceHistory() {
+  fetch('/api/balance_history?period=' + currentPeriod)
+    .then(function(r){ return r.json(); })
+    .then(function(data) {
+      var canvas = document.getElementById('balanceChart');
+      var noData = document.getElementById('noBalanceData');
+
+      // Check if all balances are the same (no trades yet)
+      var allSame = data.every(function(d){ return d.balance === data[0].balance; });
+      if (allSame && data.length > 0) {
+        // Still show the chart — flat line at starting balance
+      }
+
+      canvas.style.display = '';
+      noData.style.display = 'none';
+
+      var labels = data.map(function(d){ return d.label; });
+      var balances = data.map(function(d){ return d.balance; });
+
+      var minBal = Math.min.apply(null, balances);
+      var maxBal = Math.max.apply(null, balances);
+      var pad = Math.max((maxBal - minBal) * 0.15, 5);
+
+      if (balanceChart) {
+        balanceChart.data.labels = labels;
+        balanceChart.data.datasets[0].data = balances;
+        balanceChart.options.scales.y.min = Math.floor(minBal - pad);
+        balanceChart.options.scales.y.max = Math.ceil(maxBal + pad);
+        balanceChart.update();
+        return;
+      }
+
+      balanceChart = new Chart(canvas, {
+        type: 'line',
+        data: {
+          labels: labels,
+          datasets: [{
+            label: 'Balance (USDC)',
+            data: balances,
+            borderColor: '#4d9fff',
+            backgroundColor: 'rgba(77,159,255,0.10)',
+            borderWidth: 2,
+            pointRadius: 2,
+            pointHoverRadius: 5,
+            fill: true,
+            tension: 0.3,
+          }]
+        },
+        options: {
+          responsive: true,
+          animation: false,
+          plugins: {
+            legend: { display: false },
+            tooltip: {
+              callbacks: {
+                label: function(ctx) {
+                  return ' $' + ctx.parsed.y.toFixed(2);
+                }
+              },
+              backgroundColor: '#1a1d27',
+              borderColor: '#2a2d3a',
+              borderWidth: 1,
+              titleColor: '#8b8fa8',
+              bodyColor: '#e0e0e0',
+            }
+          },
+          scales: {
+            x: {
+              ticks: { color: '#8b8fa8', font: { size: 10 }, maxRotation: 0,
+                       autoSkip: true, maxTicksLimit: 8 },
+              grid: { color: '#1e2130' },
+              border: { color: '#2a2d3a' },
+            },
+            y: {
+              min: Math.floor(minBal - pad),
+              max: Math.ceil(maxBal + pad),
+              ticks: { color: '#8b8fa8', font: { size: 10 },
+                       callback: function(v){ return '$' + v.toFixed(0); } },
+              grid: { color: '#1e2130' },
+              border: { color: '#2a2d3a' },
+            }
+          }
+        }
+      });
+    })
+    .catch(function(e){ console.error('balance_history:', e); });
 }
 
 function loadSummary() {
@@ -1147,6 +1309,7 @@ function refresh() {
   loadTrades();
   loadWhales();
   loadInsights();
+  loadBalanceHistory();
   loadLog();
   document.getElementById('lastRefresh').textContent = new Date().toLocaleTimeString();
 }
