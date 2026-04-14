@@ -10,6 +10,7 @@ For internet access, use ngrok:
     ngrok http 5000
 """
 
+import base64
 from flask import Flask, jsonify, Response, request
 import sqlite3
 import os
@@ -27,9 +28,33 @@ app = Flask(__name__)
 
 STARTING_BANKROLL = MAX_TRADE_USDC * 20  # same synthetic bankroll as bot.py
 
+# ── Dashboard auth ────────────────────────────────────────────────────────────
+# Set DASHBOARD_TOKEN in .env to require a password for all dashboard access.
+# Any username, password = DASHBOARD_TOKEN.  Leave blank to disable (local-only).
+_DASHBOARD_TOKEN = os.getenv("DASHBOARD_TOKEN", "")
+
+@app.before_request
+def _require_auth():
+    if not _DASHBOARD_TOKEN:
+        return  # no auth configured — local-only use
+    auth = request.headers.get("Authorization", "")
+    if auth.startswith("Basic "):
+        try:
+            _, pwd = base64.b64decode(auth[6:]).decode().split(":", 1)
+            if pwd == _DASHBOARD_TOKEN:
+                return
+        except Exception:
+            pass
+    return Response(
+        "Authentication required",
+        401,
+        {"WWW-Authenticate": 'Basic realm="Polymarket Dashboard"'},
+    )
+
 
 # ── Config helpers ────────────────────────────────────────────────────────────
 
+# Keys that the dashboard Settings panel can read and write.
 CONFIG_DEFAULTS = {
     "PAPER_TRADE":           "true",
     "POLL_INTERVAL_SECONDS": "60",
@@ -42,8 +67,18 @@ CONFIG_DEFAULTS = {
     "TAKE_PROFIT_PCT":       "0.80",
 }
 
+# Keys that must NEVER be returned by any API endpoint or logged anywhere.
+_SENSITIVE_KEYS = {
+    "PRIVATE_KEY", "POLY_API_KEY", "POLY_API_SECRET", "POLY_API_PASSPHRASE",
+    "TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID", "WALLET_ADDRESS", "DASHBOARD_TOKEN",
+}
+
+
 def read_env() -> dict:
-    """Read .env file into a dict, filling missing keys with defaults."""
+    """
+    Read .env and return only the safe, configurable keys.
+    Sensitive keys (PRIVATE_KEY, API credentials, etc.) are never included.
+    """
     values = dict(CONFIG_DEFAULTS)
     try:
         with open(ENV_PATH, "r") as f:
@@ -51,17 +86,45 @@ def read_env() -> dict:
                 line = line.strip()
                 if line and "=" in line and not line.startswith("#"):
                     k, v = line.split("=", 1)
-                    values[k.strip()] = v.strip()
+                    k = k.strip()
+                    if k in CONFIG_DEFAULTS:   # whitelist — only safe keys
+                        values[k] = v.strip()
     except FileNotFoundError:
         pass
     return values
 
 
-def write_env(values: dict):
-    """Write only the configurable keys back to .env."""
+def write_env(updates: dict) -> None:
+    """
+    Merge updated config values into .env, preserving every existing line
+    (including sensitive keys the dashboard never sees).
+    Only keys in CONFIG_DEFAULTS are accepted from updates.
+    """
+    # Read existing file line-by-line so we can do in-place updates
+    existing_lines: list[str] = []
+    key_to_line: dict[str, int] = {}
+    try:
+        with open(ENV_PATH, "r") as f:
+            existing_lines = [ln.rstrip("\n") for ln in f]
+    except FileNotFoundError:
+        pass
+
+    for i, line in enumerate(existing_lines):
+        stripped = line.strip()
+        if stripped and "=" in stripped and not stripped.startswith("#"):
+            k = stripped.split("=", 1)[0].strip()
+            key_to_line[k] = i
+
+    # Apply only safe updates
+    safe_updates = {k: v for k, v in updates.items() if k in CONFIG_DEFAULTS}
+    for k, v in safe_updates.items():
+        if k in key_to_line:
+            existing_lines[key_to_line[k]] = f"{k}={v}"
+        else:
+            existing_lines.append(f"{k}={v}")
+
     with open(ENV_PATH, "w") as f:
-        for k, v in values.items():
-            f.write(f"{k}={v}\n")
+        f.write("\n".join(existing_lines) + "\n")
 
 
 def restart_bot():

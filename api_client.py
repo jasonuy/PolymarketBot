@@ -17,12 +17,23 @@ logger = logging.getLogger(__name__)
 SESSION = requests.Session()
 SESSION.headers.update({"User-Agent": "polymarket-copy-bot/1.0"})
 
+# Token IDs that returned 404 — market order book is closed, skip price checks.
+# Cleared on bot restart so resolution checks still run every cycle.
+_dead_token_ids: set[str] = set()
+
 
 def _get(url: str, params: dict = None) -> Optional[dict | list]:
     try:
         resp = SESSION.get(url, params=params, timeout=10)
         resp.raise_for_status()
         return resp.json()
+    except requests.HTTPError as exc:
+        if exc.response is not None and exc.response.status_code == 404:
+            # 404 is expected for closed/delisted markets — log at DEBUG not ERROR
+            logger.debug("GET %s → 404 (market likely closed)", url)
+        else:
+            logger.error("GET %s failed: %s", url, exc)
+        return None
     except requests.RequestException as exc:
         logger.error("GET %s failed: %s", url, exc)
         return None
@@ -78,13 +89,27 @@ def get_market_price(token_id: str) -> Optional[float]:
     """
     Returns the current mid-price for a token (YES or NO side of a market).
     token_id is the CLOB token id for that outcome.
+    Returns None (silently) for tokens whose order book is known to be closed.
     """
-    data = _get(f"{CLOB_HOST}/price", params={"token_id": token_id, "side": "BUY"})
-    if data and "price" in data:
-        try:
+    if token_id in _dead_token_ids:
+        return None
+
+    try:
+        resp = SESSION.get(
+            f"{CLOB_HOST}/price",
+            params={"token_id": token_id, "side": "BUY"},
+            timeout=10,
+        )
+        if resp.status_code == 404:
+            _dead_token_ids.add(token_id)
+            logger.debug("token_id %s...  → 404, suppressing future price checks", token_id[:12])
+            return None
+        resp.raise_for_status()
+        data = resp.json()
+        if data and "price" in data:
             return float(data["price"])
-        except (ValueError, TypeError):
-            pass
+    except (requests.RequestException, ValueError, TypeError) as exc:
+        logger.error("get_market_price(%s...) failed: %s", token_id[:12], exc)
     return None
 
 
