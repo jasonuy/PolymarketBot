@@ -35,6 +35,7 @@ class WhaleTrade:
     size_usdc:       float      # notional in USDC
     tx_hash:         str
     detected_at:     str
+    slug:            str = ""   # market slug — used for reliable GAMMA spread lookup
 
 
 def _parse_activity(raw: dict, wallet: str) -> WhaleTrade | None:
@@ -57,6 +58,7 @@ def _parse_activity(raw: dict, wallet: str) -> WhaleTrade | None:
         # API returns market id under "conditionId"
         market_id       = raw.get("conditionId") or raw.get("market") or ""
         market_question = raw.get("title") or raw.get("question") or market_id
+        slug            = raw.get("slug") or raw.get("marketSlug") or ""
 
         if not all([tx_hash, market_id]):
             return None
@@ -72,6 +74,7 @@ def _parse_activity(raw: dict, wallet: str) -> WhaleTrade | None:
             size_usdc=usdc_size,
             tx_hash=tx_hash,
             detected_at=datetime.now(UTC).isoformat(),
+            slug=slug,
         )
     except (TypeError, ValueError, KeyError) as exc:
         logger.debug("Failed to parse activity record: %s — %s", raw, exc)

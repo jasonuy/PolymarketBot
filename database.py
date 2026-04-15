@@ -210,6 +210,17 @@ def close_trade(copy_trade_id: int, close_price: float, pnl_usdc: float,
         )
 
 
+def cancel_trade(copy_trade_id: int, reason: str = "") -> None:
+    """Mark a trade as CANCELLED (order was never filled or was rejected)."""
+    with get_conn() as conn:
+        conn.execute(
+            """UPDATE copy_trades
+               SET status='CANCELLED', closed_at=?, close_reason=?
+               WHERE id=?""",
+            (datetime.now(UTC).isoformat(), reason, copy_trade_id)
+        )
+
+
 def is_tx_seen(tx_hash: str) -> bool:
     with get_conn() as conn:
         row = conn.execute("SELECT 1 FROM seen_tx WHERE tx_hash=?", (tx_hash,)).fetchone()

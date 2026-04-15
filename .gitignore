@@ -3,7 +3,7 @@
 
 # Database and logs
 *.db
-bot.log
+*.log
 stats_snapshot.json
 
 # Python

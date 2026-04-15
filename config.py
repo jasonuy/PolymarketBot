@@ -13,6 +13,7 @@ POLY_API_KEY     = os.getenv("POLY_API_KEY", "")
 POLY_API_SECRET  = os.getenv("POLY_API_SECRET", "")
 POLY_API_PASS    = os.getenv("POLY_API_PASSPHRASE", "")
 WALLET_ADDRESS   = os.getenv("WALLET_ADDRESS", "").lower()
+FUNDER_ADDRESS   = os.getenv("FUNDER_ADDRESS", "")
 
 # ── Telegram ──────────────────────────────────────────────────────────────────
 TELEGRAM_TOKEN   = os.getenv("TELEGRAM_BOT_TOKEN", "")
@@ -25,6 +26,9 @@ POLL_INTERVAL    = int(os.getenv("POLL_INTERVAL_SECONDS", "60"))
 # ── Risk management ───────────────────────────────────────────────────────────
 MAX_POSITION_FRACTION = float(os.getenv("MAX_POSITION_FRACTION", "0.05"))
 MAX_TRADE_USDC        = float(os.getenv("MAX_TRADE_USDC",        "50.0"))
+# Set LIVE_BANKROLL in .env to your Polymarket Cash balance.
+# The bot uses this for position sizing instead of querying the CLOB.
+LIVE_BANKROLL         = float(os.getenv("LIVE_BANKROLL",         "0.0"))
 MIN_WHALE_TRADE_USDC  = float(os.getenv("MIN_WHALE_TRADE_USDC",  "5.0"))
 MAX_OPEN_POSITIONS    = int(os.getenv("MAX_OPEN_POSITIONS",       "10"))
 MAX_SPREAD_PCT        = float(os.getenv("MAX_SPREAD_PCT",         "0.10"))
@@ -43,12 +47,25 @@ MIN_TRADES_BEFORE_FILTER = int(os.getenv("MIN_TRADES_BEFORE_FILTER", "5"))
 MIN_WIN_RATE_TO_FOLLOW   = float(os.getenv("MIN_WIN_RATE_TO_FOLLOW",  "0.45"))
 
 # ── Wallets to follow ─────────────────────────────────────────────────────────
-# Add wallet addresses you want to copy-trade.
-# Find top traders at polymarket.com/leaderboard
+# Mixed list: top sports traders (Polymarket leaderboard) + political specialists (PolySmartWallet)
+# Updated 2026-04-14 based on cross-leaderboard analysis
 WATCHED_WALLETS = [
-    # Example known profitable wallets — replace or add your own
-    # "0xabc123...",
-    # "0xdef456...",
+    # ── Sports specialists (Polymarket top-20 by monthly PnL) ─────────────────
+    "0x492442eab586f242b53bda933fd5de859c8a3782",  # #1  anon          $6.5M/mo
+    "0x02227b8f5a9636e895607edd3185ed6ee5598ff7",  # #2  HorizonSplendidView  $4.0M/mo
+    "0xefbc5fec8d7b0acdc8911bdd9a98d6964308f9a2",  # #3  reachingthesky  $3.7M/mo
+    "0xc2e7800b5af46e6093872b177b7a5e7f0563be51",  # #4  beachboy4      $2.7M/mo
+    "0x019782cab5d844f02bafb71f512758be78579f3c",  # #5  majorexploiter  $2.4M/mo
+    "0x2005d16a84ceefa912d4e380cd32e7ff827875ea",  # #6  RN1            $2.1M/mo
+    "0xbddf61af533ff524d27154e589d2d7a81510c684",  # #7  Countryside    $1.9M/mo
+    "0x2a2c53bd278c04da9962fcf96490e17f3dfb9bc1",  # #8  anon           $1.9M/mo
+    "0xee613b3fc183ee44f9da9c05f53e2da107e3debf",  # #9  sovereign2013  $1.8M/mo
+    "0x93abbc022ce98d6f45d4444b594791cc4b7a9723",  # #15 gatorr         $1.3M/mo
+    "0xdc876e6873772d38716fda7f2452a78d426d7ab6",  # #11 anon           $1.5M/mo
+    # ── Political/macro specialists (PolySmartWallet top score, non-sports) ───
+    "0x5da55a322ba9099b2910780c0bf84c7afafd56ac",  # GBVT43TY   91.5% win, 93% politics
+    "0xfbaaf6df48ac710f7e4f714a6e8c710e30fc1869",  # GBVTD455   91.3% win, 93% politics
+    "0x65e53eb81aa01db5cf9cd8a631d104f2aeed1b1a",  # IcarusTrading 100% win, 85% politics/geo
 ]
 
 # ── Database ──────────────────────────────────────────────────────────────────

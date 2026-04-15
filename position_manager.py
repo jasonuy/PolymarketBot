@@ -33,12 +33,26 @@ def _already_in_market(market_id: str) -> bool:
     return any(p["market_id"] == market_id for p in positions)
 
 
-def _check_liquidity(token_id: str) -> bool:
+def _check_liquidity(token_id: str, market_id: str = "", slug: str = "") -> bool:
     """Returns True if the market is liquid enough to enter.
-    Skipped in paper trade mode — no real order is being placed."""
+    Skipped in paper trade mode — no real order is being placed.
+
+    Spread lookup order:
+      1. GAMMA by slug  — most reliable; handles neg-risk game markets where
+         the individual CLOB token book always shows ~99% spread.
+      2. GAMMA by conditionId — works for standard binary markets.
+      3. CLOB token order book — last resort fallback.
+    """
     if PAPER_TRADE:
         return True
-    spread = api_client.get_spread(token_id)
+
+    # Try GAMMA first (handles neg-risk markets correctly)
+    spread = api_client.get_spread_from_gamma(market_id, slug=slug)
+
+    # Fall back to raw CLOB token book
+    if spread is None:
+        spread = api_client.get_spread(token_id)
+
     if spread is None:
         logger.warning("Could not fetch spread for token %s — skipping", token_id)
         return False
@@ -67,7 +81,7 @@ def should_copy(trade: WhaleTrade, bankroll_usdc: float) -> tuple[bool, float]:
         return False, 0.0
 
     # 3. Liquidity check
-    if not _check_liquidity(trade.token_id):
+    if not _check_liquidity(trade.token_id, market_id=trade.market_id, slug=trade.slug):
         return False, 0.0
 
     # 4. Calculate position size

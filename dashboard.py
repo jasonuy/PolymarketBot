@@ -18,7 +18,8 @@ import subprocess
 import sys
 import time
 from datetime import datetime, timedelta, timezone
-from config import DB_PATH, PAPER_TRADE, MAX_TRADE_USDC
+from config import DB_PATH, PAPER_TRADE, MAX_TRADE_USDC, LIVE_BANKROLL, FUNDER_ADDRESS
+import api_client as _api
 
 LOG_PATH  = "bot.log"
 ENV_PATH  = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
@@ -26,7 +27,7 @@ LOG_TAIL_LINES = 100
 
 app = Flask(__name__)
 
-STARTING_BANKROLL = MAX_TRADE_USDC * 20  # same synthetic bankroll as bot.py
+STARTING_BANKROLL = LIVE_BANKROLL if LIVE_BANKROLL > 0 else MAX_TRADE_USDC * 20
 
 # ── Dashboard auth ────────────────────────────────────────────────────────────
 # Set DASHBOARD_TOKEN in .env to require a password for all dashboard access.
@@ -58,6 +59,7 @@ def _require_auth():
 CONFIG_DEFAULTS = {
     "PAPER_TRADE":           "true",
     "POLL_INTERVAL_SECONDS": "60",
+    "LIVE_BANKROLL":         "0.0",
     "MIN_WHALE_TRADE_USDC":  "5.0",
     "MAX_TRADE_USDC":        "50.0",
     "MAX_POSITION_FRACTION": "0.05",
@@ -195,14 +197,47 @@ def api_summary():
             COALESCE(ROUND(SUM(COALESCE(pnl_usdc, 0)), 2), 0)              AS total_pnl,
             COALESCE(ROUND(SUM(CASE WHEN status='OPEN' THEN size_usdc ELSE 0 END), 2), 0) AS deployed_usdc
         FROM copy_trades
+        WHERE paper_trade = 0
     """)
     closed = row.get("closed_trades", 0) or 0
     wins   = row.get("wins", 0) or 0
-    row["win_rate"]         = round(wins / closed * 100, 1) if closed > 0 else 0
-    row["starting_balance"] = STARTING_BANKROLL
-    row["current_balance"]  = round(STARTING_BANKROLL + (row.get("total_pnl") or 0), 2)
-    row["paper_mode"]       = PAPER_TRADE
-    row["whale_count"]      = (query_one("SELECT COUNT(*) AS n FROM whale_trades") or {}).get("n", 0)
+    row["win_rate"]   = round(wins / closed * 100, 1) if closed > 0 else 0
+    row["paper_mode"] = PAPER_TRADE
+
+    live_bankroll = float(read_env().get("LIVE_BANKROLL", "0") or "0")
+    row["starting_balance"] = live_bankroll if live_bankroll > 0 else None
+
+    if FUNDER_ADDRESS:
+        try:
+            import trade_executor
+            cash = trade_executor.get_live_balance()
+            portfolio = _api.get_portfolio(FUNDER_ADDRESS)
+            row["cash"]            = cash
+            row["positions_value"] = portfolio["positions_value"]
+            row["portfolio_value"] = round(cash + portfolio["positions_value"], 2)
+
+            # Calculate starting balance from trade history (net deposits).
+            # Fall back to LIVE_BANKROLL env var if the API call fails.
+            calculated = _api.get_starting_balance(FUNDER_ADDRESS, cash)
+            if calculated is not None:
+                row["starting_balance"] = calculated
+            elif live_bankroll > 0:
+                row["starting_balance"] = live_bankroll
+
+            sb = row["starting_balance"]
+            row["total_pnl"] = round(row["portfolio_value"] - sb, 2) if sb else None
+        except Exception:
+            row["cash"]            = None
+            row["positions_value"] = None
+            row["portfolio_value"] = None
+            row["total_pnl"]       = None
+    else:
+        row["cash"]            = None
+        row["positions_value"] = None
+        row["portfolio_value"] = None
+        row["total_pnl"]       = None
+
+    row["whale_count"] = (query_one("SELECT COUNT(*) AS n FROM whale_trades") or {}).get("n", 0)
     return jsonify(row)
 
 
@@ -298,6 +333,23 @@ def api_insights():
         ORDER BY signal_count DESC
         LIMIT 10
     """)
+
+    # Enrich open positions with live Data API values (cur price, value, P&L)
+    if FUNDER_ADDRESS:
+        try:
+            portfolio = _api.get_portfolio(FUNDER_ADDRESS)
+            by_cond = portfolio["by_condition"]
+            for p in positions:
+                live = by_cond.get((p.get("market_id") or "").lower())
+                if live:
+                    p["cur_price"]   = live.get("curPrice")
+                    p["cur_value"]   = round(live.get("currentValue", 0), 2)
+                    p["pnl_usdc"]    = round(live.get("cashPnl", 0), 2)
+                    p["pnl_pct"]     = round(live.get("percentPnl", 0), 1)
+                else:
+                    p["cur_price"] = p["cur_value"] = p["pnl_usdc"] = p["pnl_pct"] = None
+        except Exception:
+            pass
 
     held_ids = {p["market_id"] for p in positions}
     for row in activity:
@@ -823,9 +875,9 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 <div class="page">
 
   <div class="grid-4">
-    <div class="card"><div class="card-title">Starting Balance</div><div class="stat neu" id="startBal">—</div></div>
-    <div class="card"><div class="card-title">Current Balance</div><div class="stat neu" id="currBal">—</div></div>
-    <div class="card"><div class="card-title">Total P&amp;L</div><div class="stat neu" id="totalPnl">—</div></div>
+    <div class="card"><div class="card-title">Starting Balance</div><div class="stat neu" id="startingBal">—</div></div>
+    <div class="card"><div class="card-title">Portfolio Value</div><div class="stat neu" id="portfolioVal">—</div></div>
+    <div class="card"><div class="card-title">Total P&amp;L</div><div class="stat neu" id="unrealizedPnl">—</div></div>
     <div class="card"><div class="card-title">Win Rate</div><div class="stat neu" id="winRate">—</div></div>
   </div>
 
@@ -847,7 +899,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     <div id="insightPosWrap" style="overflow-x:auto">
       <table class="tbl" id="insightPosTable">
         <thead><tr>
-          <th>Market</th><th>Outcome</th><th>Entry</th><th>Size</th><th>Held for</th><th style="white-space:nowrap">Whale Signals</th>
+          <th>Market</th><th>Outcome</th><th>Entry</th><th>Size</th><th>Cur Value</th><th>P&amp;L</th><th>Held for</th><th style="white-space:nowrap">Whale Signals</th>
         </tr></thead>
         <tbody id="insightPosBody"></tbody>
       </table>
@@ -916,6 +968,12 @@ DASHBOARD_HTML = """<!DOCTYPE html>
           <label>Poll Interval (seconds)</label>
           <div class="hint">How often the bot scans whale wallets for new trades. Lower = faster detection but more API calls. Recommended: 30–120.</div>
           <input type="number" id="cfg_POLL_INTERVAL_SECONDS" min="10" max="3600" step="10">
+        </div>
+
+        <div class="cfg-field">
+          <label>Starting Balance (USDC)</label>
+          <div class="hint">Your initial bankroll used for position sizing and the balance graph baseline. Set this to your Polymarket Cash balance when you started the bot.</div>
+          <input type="number" id="cfg_LIVE_BANKROLL" min="0" step="1">
         </div>
 
         <div class="cfg-field">
@@ -1127,13 +1185,13 @@ function loadSummary() {
     var badge = document.getElementById('modeBadge');
     badge.className = 'badge ' + (paper ? 'badge-paper' : 'badge-live');
     badge.textContent = paper ? 'PAPER TRADE' : 'LIVE TRADE';
-    document.getElementById('startBal').textContent = '$' + fmt(d.starting_balance);
-    var cb = document.getElementById('currBal');
-    cb.textContent = '$' + fmt(d.current_balance);
-    cb.className = 'stat ' + col(d.current_balance - d.starting_balance);
-    var pnl = document.getElementById('totalPnl');
-    pnl.textContent = fmtUsd(d.total_pnl);
-    pnl.className = 'stat ' + col(d.total_pnl);
+    document.getElementById('startingBal').textContent = d.starting_balance != null ? '$' + fmt(d.starting_balance) : '—';
+    var pv = document.getElementById('portfolioVal');
+    pv.textContent = d.portfolio_value != null ? '$' + fmt(d.portfolio_value) : '—';
+    pv.className = 'stat ' + col(d.portfolio_value != null ? d.portfolio_value - d.starting_balance : 0);
+    var upnl = document.getElementById('unrealizedPnl');
+    upnl.textContent = d.total_pnl != null ? fmtUsd(d.total_pnl) : '—';
+    upnl.className = 'stat ' + col(d.total_pnl);
     document.getElementById('winRate').textContent = d.win_rate + '%';
     document.getElementById('openTrades').textContent = d.open_trades;
     document.getElementById('closedTrades').textContent = d.closed_trades;
@@ -1211,11 +1269,22 @@ function loadInsights() {
       document.getElementById('insightPosEmpty').style.display = 'none';
       posBody.innerHTML = d.positions.map(function(p) {
         var sigColor = p.signals_since_entry > 5 ? 'pos' : (p.signals_since_entry > 0 ? 'neu' : 'neg');
+        var curVal = p.cur_value != null ? '$' + fmt(p.cur_value, 2) : '—';
+        var pnlCell = '—';
+        if (p.pnl_usdc != null) {
+          var pnlClass = p.pnl_usdc >= 0 ? 'pos' : 'neg';
+          pnlCell = '<span class="'+pnlClass+'" style="font-weight:600">'
+            + fmtUsd(p.pnl_usdc)
+            + (p.pnl_pct != null ? ' <span style="font-size:0.78rem;opacity:0.75">('+p.pnl_pct+'%)</span>' : '')
+            + '</span>';
+        }
         return '<tr>'
           + '<td><span class="mq" title="'+esc(p.market_question)+'">'+esc(p.market_question)+'</span></td>'
           + '<td>'+esc(p.outcome)+'</td>'
           + '<td>'+fmt(p.entry_price, 3)+'</td>'
           + '<td>$'+fmt(p.size_usdc, 2)+'</td>'
+          + '<td>'+curVal+'</td>'
+          + '<td>'+pnlCell+'</td>'
           + '<td class="mono">'+timeAgo(p.placed_at)+'</td>'
           + '<td class="'+sigColor+'" style="font-weight:600">'+p.signals_since_entry+'</td>'
           + '</tr>';
@@ -1296,6 +1365,7 @@ function loadConfig() {
   fetch('/api/config').then(function(r){ return r.json(); }).then(function(d) {
     document.getElementById('cfg_PAPER_TRADE').value          = d.PAPER_TRADE || 'true';
     document.getElementById('cfg_POLL_INTERVAL_SECONDS').value = d.POLL_INTERVAL_SECONDS || '60';
+    document.getElementById('cfg_LIVE_BANKROLL').value         = d.LIVE_BANKROLL || '0';
     document.getElementById('cfg_MIN_WHALE_TRADE_USDC').value  = d.MIN_WHALE_TRADE_USDC || '5.0';
     document.getElementById('cfg_MAX_TRADE_USDC').value        = d.MAX_TRADE_USDC || '50.0';
     // stored as fraction (0.05), display as percent (5)
@@ -1332,6 +1402,7 @@ function saveConfig() {
   var payload = {
     PAPER_TRADE:           document.getElementById('cfg_PAPER_TRADE').value,
     POLL_INTERVAL_SECONDS: document.getElementById('cfg_POLL_INTERVAL_SECONDS').value,
+    LIVE_BANKROLL:         document.getElementById('cfg_LIVE_BANKROLL').value,
     MIN_WHALE_TRADE_USDC:  document.getElementById('cfg_MIN_WHALE_TRADE_USDC').value,
     MAX_TRADE_USDC:        document.getElementById('cfg_MAX_TRADE_USDC').value,
     // convert percent back to fraction

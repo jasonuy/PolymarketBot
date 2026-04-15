@@ -34,10 +34,12 @@ from config import (
     POLL_INTERVAL,
     WATCHED_WALLETS,
     MAX_TRADE_USDC,
+    LIVE_BANKROLL,
     STOP_LOSS_PCT,
     TAKE_PROFIT_PCT,
     MIN_TRADES_BEFORE_FILTER,
     MIN_WIN_RATE_TO_FOLLOW,
+    FUNDER_ADDRESS,
 )
 
 # Runtime wallet list — starts from config, topped up by auto-discovery
@@ -73,6 +75,280 @@ logger = logging.getLogger(__name__)
 
 
 # ── Core loop ─────────────────────────────────────────────────────────────────
+
+def import_trade_history() -> None:
+    """
+    Download full wallet trade history from the Polymarket Data API and
+    reconcile it with the DB.
+
+    - Closed positions (have both BUYs and SELLs for the same token):
+        • If already in DB → update to CLOSED with actual P&L
+        • If missing from DB → insert as a CLOSED live trade
+    - Open positions (BUY only) → already handled by sync_positions_with_polymarket()
+    """
+    if not FUNDER_ADDRESS:
+        logger.warning("import_trade_history: FUNDER_ADDRESS not set — skipping")
+        return
+
+    logger.info("Downloading trade history from Polymarket...")
+
+    # Paginate through all activity
+    all_trades: list[dict] = []
+    limit, offset = 100, 0
+    while True:
+        page = api_client.get_wallet_activity(FUNDER_ADDRESS, limit=limit)
+        # get_wallet_activity doesn't support offset, so fall back to direct call
+        import requests as _req
+        from config import DATA_API
+        resp = _req.get(f"{DATA_API}/activity",
+                        params={"user": FUNDER_ADDRESS, "limit": limit, "offset": offset},
+                        timeout=10)
+        if not resp.ok:
+            break
+        page = resp.json()
+        if not isinstance(page, list) or not page:
+            break
+        all_trades.extend(page)
+        if len(page) < limit:
+            break
+        offset += limit
+
+    logger.info("import_trade_history: fetched %d trades", len(all_trades))
+
+    # Group by asset (token_id) — uniquely identifies one outcome of one market
+    from collections import defaultdict
+    by_asset: dict[str, list[dict]] = defaultdict(list)
+    for t in all_trades:
+        by_asset[t["asset"]].append(t)
+
+    # Fetch existing DB records for quick lookup
+    db_open   = database.get_open_positions()
+    db_open_by_token = {(t.get("token_id") or "").lower(): t for t in db_open if t.get("token_id")}
+    db_open_by_key   = {
+        ((t.get("market_id") or "").lower(), (t.get("outcome") or "").lower()): t
+        for t in db_open
+    }
+
+    inserted_count = 0
+    closed_count   = 0
+
+    for asset, txs in by_asset.items():
+        buys  = [t for t in txs if t["side"] == "BUY"]
+        sells = [t for t in txs if t["side"] == "SELL"]
+
+        if not sells:
+            continue  # Still open — handled by startup sync
+
+        total_buy_usdc  = sum(t["usdcSize"] for t in buys)
+        total_sell_usdc = sum(t["usdcSize"] for t in sells)
+        pnl             = round(total_sell_usdc - total_buy_usdc, 4)
+        avg_buy_price   = round(
+            sum(t["price"] * t["usdcSize"] for t in buys) / total_buy_usdc, 6
+        ) if total_buy_usdc else 0.0
+        # Weighted average sell price
+        avg_sell_price = round(
+            sum(t["price"] * t["usdcSize"] for t in sells) / total_sell_usdc, 6
+        ) if total_sell_usdc else 0.0
+        # Most recent sell timestamp (Unix → ISO)
+        last_sell_ts = max(t["timestamp"] for t in sells)
+        from datetime import timezone
+        closed_at = datetime.fromtimestamp(last_sell_ts, tz=timezone.utc).isoformat()
+
+        sample    = txs[0]
+        cid       = sample.get("conditionId") or ""
+        outcome   = sample.get("outcome") or ""
+        title     = sample.get("title") or ""
+        close_reason = "WIN" if pnl > 0 else "LOSS"
+
+        # Check if this position already exists in the DB (open or closed)
+        db_trade = (
+            db_open_by_token.get(asset.lower()) or
+            db_open_by_key.get((cid.lower(), outcome.lower()))
+        )
+
+        if db_trade:
+            # Close the existing open record with real P&L
+            logger.info(
+                "import_trade_history: closing DB id=%d  %s / %s  pnl=%+.2f",
+                db_trade["id"], title[:40], outcome, pnl,
+            )
+            database.close_trade(
+                db_trade["id"],
+                close_price=avg_sell_price,
+                pnl_usdc=pnl,
+                close_reason=f"Market resolved — {close_reason}",
+            )
+            closed_count += 1
+        else:
+            # Check if it was already imported as a closed record to avoid duplicates
+            with database.get_conn() as conn:
+                existing = conn.execute(
+                    """SELECT id FROM copy_trades
+                       WHERE token_id=? AND status='CLOSED'
+                       LIMIT 1""",
+                    (asset,)
+                ).fetchone()
+            if existing:
+                logger.debug(
+                    "import_trade_history: already in DB (id=%d) — skipping %s / %s",
+                    existing["id"], title[:40], outcome,
+                )
+                continue
+
+            # Insert as a new closed live trade
+            logger.info(
+                "import_trade_history: inserting closed  %s / %s  pnl=%+.2f",
+                title[:40], outcome, pnl,
+            )
+            new_id = database.record_copy_trade(
+                whale_trade_id=None,
+                market_id=cid,
+                market_question=title,
+                token_id=asset,
+                outcome=outcome,
+                side="BUY",
+                price=avg_buy_price,
+                size_usdc=total_buy_usdc,
+                order_id="",
+                paper_trade=False,
+            )
+            database.close_trade(
+                new_id,
+                close_price=avg_sell_price,
+                pnl_usdc=pnl,
+                close_reason=f"Market resolved — {close_reason}",
+            )
+            # Patch closed_at to the real timestamp (not now)
+            with database.get_conn() as conn:
+                conn.execute(
+                    "UPDATE copy_trades SET closed_at=? WHERE id=?",
+                    (closed_at, new_id)
+                )
+            inserted_count += 1
+
+    total_pnl = sum(
+        round(sum(t["usdcSize"] for t in txs if t["side"] == "SELL") -
+              sum(t["usdcSize"] for t in txs if t["side"] == "BUY"), 2)
+        for txs in by_asset.values()
+        if any(t["side"] == "SELL" for t in txs)
+    )
+    logger.info(
+        "import_trade_history: done — %d inserted, %d updated, total closed P&L = %+.2f USDC",
+        inserted_count, closed_count, total_pnl,
+    )
+
+
+def sync_positions_with_polymarket() -> None:
+    """
+    Sync the DB with live Polymarket positions on startup.
+    Polymarket is the gold standard.
+
+      - Positions on Polymarket not in DB  → inserted as live open trades
+      - Live DB positions not on Polymarket → closed (resolved or sold externally)
+      - Paper trades in DB                 → untouched (never placed on Polymarket)
+    """
+    if not FUNDER_ADDRESS:
+        logger.warning("startup_sync: FUNDER_ADDRESS not set — skipping sync")
+        return
+
+    logger.info("Syncing positions with Polymarket...")
+
+    poly_positions = api_client.get_wallet_positions(FUNDER_ADDRESS)
+    if poly_positions is None:
+        logger.error("startup_sync: failed to fetch Polymarket positions — skipping")
+        return
+
+    # Build lookup keyed by (conditionId.lower(), outcome.lower())
+    poly_by_key: dict[tuple, dict] = {}
+    for p in poly_positions:
+        cid     = (p.get("conditionId") or "").lower()
+        outcome = (p.get("outcome") or "").lower()
+        if cid:
+            poly_by_key[(cid, outcome)] = p
+
+    db_open = database.get_open_positions()
+    db_live_matched: set[tuple] = set()
+    closed_count = 0
+
+    # Check each live (non-paper) DB position against Polymarket
+    for trade in db_open:
+        if trade.get("paper_trade"):
+            continue
+
+        cid     = (trade.get("market_id") or "").lower()
+        outcome = (trade.get("outcome") or "").lower()
+        key     = (cid, outcome)
+
+        if key in poly_by_key:
+            db_live_matched.add(key)
+            logger.info(
+                "startup_sync: verified   id=%-3d  %s / %s",
+                trade["id"],
+                (trade.get("market_question") or cid)[:45],
+                trade.get("outcome"),
+            )
+        else:
+            logger.warning(
+                "startup_sync: not on Polymarket — closing  id=%d  %s / %s",
+                trade["id"],
+                (trade.get("market_question") or cid)[:45],
+                trade.get("outcome"),
+            )
+            database.close_trade(
+                trade["id"],
+                close_price=0.0,
+                pnl_usdc=-trade["size_usdc"],
+                close_reason="Not found on Polymarket at startup sync (resolved or sold externally)",
+            )
+            closed_count += 1
+
+    # Insert Polymarket positions that have no matching DB record
+    # Build set of token_ids already closed in DB to avoid re-inserting zero-value resolved positions
+    with database.get_conn() as conn:
+        closed_tokens: set[str] = {
+            row[0] for row in conn.execute(
+                "SELECT token_id FROM copy_trades WHERE status IN ('CLOSED','CANCELLED') AND token_id IS NOT NULL"
+            ).fetchall()
+        }
+
+    inserted_count = 0
+    for key, p in poly_by_key.items():
+        if key in db_live_matched:
+            continue
+        title       = p.get("title") or ""
+        outcome     = p.get("outcome") or ""
+        avg_price   = float(p.get("avgPrice") or 0)
+        initial_val = float(p.get("initialValue") or 0)
+        asset       = p.get("asset") or ""
+        cid         = p.get("conditionId") or ""
+
+        # Skip positions already closed in DB (e.g. resolved at $0, not yet redeemed on-chain)
+        if asset in closed_tokens:
+            logger.debug("startup_sync: skipping %s / %s — already closed in DB", title[:40], outcome)
+            continue
+        logger.info(
+            "startup_sync: inserting  %s / %s  (avg_price=%.4f  size=%.2f USDC)",
+            title[:45], outcome, avg_price, initial_val,
+        )
+        database.record_copy_trade(
+            whale_trade_id=None,
+            market_id=cid,
+            market_question=title,
+            token_id=asset,
+            outcome=outcome,
+            side="BUY",
+            price=avg_price,
+            size_usdc=initial_val,
+            order_id="",
+            paper_trade=False,
+        )
+        inserted_count += 1
+
+    logger.info(
+        "startup_sync: done — %d on Polymarket | %d inserted | %d closed as external",
+        len(poly_positions), inserted_count, closed_count,
+    )
+
 
 def process_whale_trade(trade: wallet_monitor.WhaleTrade) -> None:
     """Handle a single newly detected whale trade."""
@@ -120,6 +396,8 @@ def process_whale_trade(trade: wallet_monitor.WhaleTrade) -> None:
     # synthetic bankroll so sizing math still works meaningfully
     if PAPER_TRADE:
         bankroll = MAX_TRADE_USDC * 20
+    elif LIVE_BANKROLL > 0:
+        bankroll = LIVE_BANKROLL
     else:
         bankroll = trade_executor.get_live_balance()
         if bankroll <= 0:
@@ -148,11 +426,13 @@ def process_whale_trade(trade: wallet_monitor.WhaleTrade) -> None:
 def check_open_positions() -> None:
     """
     Check every open position for:
+      0. Order reconciliation — cancel any DB records whose CLOB order is INVALID/CANCELLED.
       1. Market resolution — GAMMA API reports the market as closed with a final price.
       2. Take-profit      — current CLOB price rose >= TAKE_PROFIT_PCT from entry.
       3. Stop-loss        — current CLOB price dropped >= STOP_LOSS_PCT from entry.
     Closes any position that meets a criterion and records P&L.
     """
+    trade_executor.reconcile_open_orders()
     positions = database.get_open_positions()
     if not positions:
         return
@@ -192,6 +472,27 @@ def check_open_positions() -> None:
                 close_reason = f"Market resolved — {result}"
 
         if close_price is not None:
+            paper = pos.get("paper_trade")
+
+            # For stop-loss / take-profit: place a real SELL order on the CLOB.
+            # For resolved markets: no sell needed — Polymarket pays out automatically on-chain.
+            # Skip sell for paper trades entirely.
+            is_resolution = close_reason and "resolved" in close_reason.lower()
+            if not paper and token_id and not is_resolution:
+                shares = round(size_usdc / entry_price, 4) if entry_price > 0 else 0
+                sell_id = trade_executor.execute_sell_trade(
+                    token_id=token_id,
+                    shares=shares,
+                    market_question=market_question,
+                )
+                if sell_id is None:
+                    # Live sell failed — don't close the DB record, try again next cycle
+                    logger.error(
+                        "Sell order failed — keeping position open in DB (id=%d) to retry",
+                        pos_id,
+                    )
+                    continue
+
             pnl = position_manager.calculate_pnl(entry_price, close_price, size_usdc, "BUY")
             database.close_trade(pos_id, close_price, pnl, close_reason or "")
 
@@ -226,7 +527,7 @@ def check_open_positions() -> None:
 
 def run_once() -> None:
     """Single scan cycle — called every POLL_INTERVAL seconds."""
-    logger.info("── Scanning wallets (%s) ──", datetime.now(UTC).strftime("%H:%M:%S UTC"))
+    logger.info("-- Scanning wallets (%s) --", datetime.now(UTC).strftime("%H:%M:%S UTC"))
     check_open_positions()
     for trade in wallet_monitor.scan_wallets():
         try:
@@ -281,6 +582,9 @@ def main() -> None:
     database.init_db()
 
     wallets = _init_wallets()
+
+    sync_positions_with_polymarket()
+    import_trade_history()
 
     mode = "PAPER TRADE" if PAPER_TRADE else "LIVE TRADE"
     logger.info("=" * 60)
