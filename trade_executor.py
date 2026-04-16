@@ -228,6 +228,9 @@ def reconcile_open_orders() -> None:
         order_id = trade["order_id"]
         try:
             resp = client.get_order(order_id)
+            if not resp or not isinstance(resp, dict):
+                logger.debug("reconcile_open_orders: no data for order %s — skipping", order_id[:18])
+                continue
             clob_status = resp.get("status", "")
             size_matched = float(resp.get("size_matched") or 0)
 
