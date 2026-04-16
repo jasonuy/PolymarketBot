@@ -50,7 +50,7 @@ MAX_POSITIONS_PER_WALLET = int(os.getenv("MAX_POSITIONS_PER_WALLET",  "2"))
 # ── Dynamic whale trust scoring ───────────────────────────────────────────────
 # New wallets start with INITIAL_TRUST_LEVEL concurrent-position slots.
 # Each WIN earns +1 slot (up to MAX_TRUST_LEVEL); each LOSS costs -1.
-# At 0 the wallet is blacklisted — no further copies until manually reset.
+# Trust floors at 1 — even the worst performer gets 1 concurrent slot.
 INITIAL_TRUST_LEVEL = int(os.getenv("INITIAL_TRUST_LEVEL", "3"))
 MAX_TRUST_LEVEL     = int(os.getenv("MAX_TRUST_LEVEL",     "10"))
 

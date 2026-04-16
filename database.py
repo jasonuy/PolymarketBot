@@ -107,7 +107,7 @@ def init_db() -> None:
                 "SELECT wallet, wins, losses FROM wallet_stats WHERE total_copies > 0"
             ).fetchall()
             for r in rows:
-                computed = max(0, min(_MTL, _ITL + r["wins"] - r["losses"]))
+                computed = max(1, min(_MTL, _ITL + r["wins"] - r["losses"]))
                 conn.execute(
                     "UPDATE wallet_stats SET trust_level=? WHERE wallet=?",
                     (computed, r["wallet"])
@@ -283,8 +283,8 @@ def update_wallet_stats(wallet: str, pnl: float) -> None:
     """
     Increment the win/loss record for a wallet after a trade closes.
     Also adjusts the dynamic trust level: +1 for a win, -1 for a loss.
-    Trust level is clamped to [0, MAX_TRUST_LEVEL].  At 0 the wallet is
-    blacklisted — process_whale_trade() will skip all future signals.
+    Trust level is clamped to [1, MAX_TRUST_LEVEL].  At 1 the wallet is
+    limited to 1 concurrent position — it can never be fully blocked.
     """
     from config import INITIAL_TRUST_LEVEL, MAX_TRUST_LEVEL
     win   = 1 if pnl > 0 else 0
@@ -298,7 +298,7 @@ def update_wallet_stats(wallet: str, pnl: float) -> None:
         ).fetchone()
         if existing:
             old_trust = existing["trust_level"] if existing["trust_level"] is not None else INITIAL_TRUST_LEVEL
-            new_trust = max(0, min(MAX_TRUST_LEVEL, old_trust + delta))
+            new_trust = max(1, min(MAX_TRUST_LEVEL, old_trust + delta))
             conn.execute(
                 """UPDATE wallet_stats
                    SET total_copies=?, wins=?, losses=?, total_pnl=?,
@@ -310,9 +310,9 @@ def update_wallet_stats(wallet: str, pnl: float) -> None:
                  round(existing["total_pnl"] + pnl, 2),
                  new_trust, now, wallet)
             )
-            if new_trust == 0:
+            if new_trust == 1 and delta < 0:
                 logger.warning(
-                    "Wallet %s... trust level reached 0 — blacklisted "
+                    "Wallet %s... trust floored at 1 — capped to 1 concurrent position "
                     "(%d W / %d L, P&L %+.2f)",
                     wallet[:10], existing["wins"] + win,
                     existing["losses"] + loss,
@@ -341,7 +341,7 @@ def get_wallet_trust_level(wallet: str) -> int:
     """
     Returns the current trust level for a wallet.
     New wallets (never traded before) return INITIAL_TRUST_LEVEL.
-    A return value of 0 means the wallet is blacklisted.
+    Minimum return value is 1 — trust never drops to 0.
     """
     from config import INITIAL_TRUST_LEVEL
     stats = get_wallet_stats(wallet)

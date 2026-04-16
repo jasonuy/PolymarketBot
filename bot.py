@@ -372,17 +372,6 @@ def sync_positions_with_polymarket() -> None:
 def process_whale_trade(trade: wallet_monitor.WhaleTrade) -> None:
     """Handle a single newly detected whale trade."""
 
-    # ── Wallet trust / blacklist filter ──────────────────────────────────────
-    trust_level = database.get_wallet_trust_level(trade.wallet)
-    if trust_level == 0:
-        stats = database.get_wallet_stats(trade.wallet) or {}
-        logger.warning(
-            "Wallet %s... blacklisted (trust=0, %d W / %d L, P&L %+.2f) — skipping",
-            trade.wallet[:10],
-            stats.get("wins", 0), stats.get("losses", 0), stats.get("total_pnl", 0.0),
-        )
-        return
-
     # ── Wallet win-rate filter (long-term backstop after MIN_TRADES trades) ──
     stats = database.get_wallet_stats(trade.wallet)
     if stats and stats["total_copies"] >= MIN_TRADES_BEFORE_FILTER:
