@@ -18,7 +18,6 @@ from config import (
     MAX_TRADE_USDC,
     MAX_OPEN_POSITIONS,
     MAX_SPREAD_PCT,
-    MAX_POSITIONS_PER_WALLET,
     PAPER_TRADE,
 )
 
@@ -84,12 +83,13 @@ def should_copy(trade: WhaleTrade, bankroll_usdc: float) -> tuple[bool, float]:
         logger.info("Max open positions (%d) reached — skipping", MAX_OPEN_POSITIONS)
         return False, 0.0
 
-    # 2. Per-wallet cap — prevent one noisy wallet from dominating the portfolio
+    # 2. Per-wallet trust cap — trust level is earned dynamically (win=+1, loss=-1)
+    trust_level = database.get_wallet_trust_level(trade.wallet)
     wallet_open = _open_positions_for_wallet(trade.wallet)
-    if wallet_open >= MAX_POSITIONS_PER_WALLET:
+    if wallet_open >= trust_level:
         logger.info(
-            "Wallet %s... already has %d open position(s) — skipping (cap: %d)",
-            trade.wallet[:10], wallet_open, MAX_POSITIONS_PER_WALLET,
+            "Wallet %s... already has %d open position(s) — skipping (trust level: %d)",
+            trade.wallet[:10], wallet_open, trust_level,
         )
         return False, 0.0
 

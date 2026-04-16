@@ -79,10 +79,11 @@ def init_db() -> None:
     # Migrate existing databases: add columns if they don't exist yet
     with get_conn() as conn:
         for col_def in [
-            ("copy_trades", "market_question", "TEXT"),
-            ("copy_trades", "token_id",        "TEXT"),
-            ("copy_trades", "close_reason",    "TEXT"),
-            ("copy_trades", "event_type",      "TEXT"),
+            ("copy_trades",  "market_question", "TEXT"),
+            ("copy_trades",  "token_id",        "TEXT"),
+            ("copy_trades",  "close_reason",    "TEXT"),
+            ("copy_trades",  "event_type",      "TEXT"),
+            ("wallet_stats", "trust_level",     "INTEGER NOT NULL DEFAULT 3"),
         ]:
             try:
                 conn.execute(f"ALTER TABLE {col_def[0]} ADD COLUMN {col_def[1]} {col_def[2]}")
@@ -247,32 +248,51 @@ def get_open_positions() -> list[dict]:
 
 
 def update_wallet_stats(wallet: str, pnl: float) -> None:
-    """Increment the win/loss record for a wallet after a trade closes."""
-    win  = 1 if pnl > 0 else 0
-    loss = 1 if pnl <= 0 else 0
-    now  = datetime.now(UTC).isoformat()
+    """
+    Increment the win/loss record for a wallet after a trade closes.
+    Also adjusts the dynamic trust level: +1 for a win, -1 for a loss.
+    Trust level is clamped to [0, MAX_TRUST_LEVEL].  At 0 the wallet is
+    blacklisted — process_whale_trade() will skip all future signals.
+    """
+    from config import INITIAL_TRUST_LEVEL, MAX_TRUST_LEVEL
+    win   = 1 if pnl > 0 else 0
+    loss  = 1 if pnl <= 0 else 0
+    delta = 1 if pnl > 0 else -1
+    now   = datetime.now(UTC).isoformat()
     with get_conn() as conn:
         existing = conn.execute(
-            "SELECT total_copies, wins, losses, total_pnl FROM wallet_stats WHERE wallet=?",
+            "SELECT total_copies, wins, losses, total_pnl, trust_level FROM wallet_stats WHERE wallet=?",
             (wallet,)
         ).fetchone()
         if existing:
+            old_trust = existing["trust_level"] if existing["trust_level"] is not None else INITIAL_TRUST_LEVEL
+            new_trust = max(0, min(MAX_TRUST_LEVEL, old_trust + delta))
             conn.execute(
                 """UPDATE wallet_stats
-                   SET total_copies=?, wins=?, losses=?, total_pnl=?, last_updated=?
+                   SET total_copies=?, wins=?, losses=?, total_pnl=?,
+                       trust_level=?, last_updated=?
                    WHERE wallet=?""",
                 (existing["total_copies"] + 1,
                  existing["wins"] + win,
                  existing["losses"] + loss,
                  round(existing["total_pnl"] + pnl, 2),
-                 now, wallet)
+                 new_trust, now, wallet)
             )
+            if new_trust == 0:
+                logger.warning(
+                    "Wallet %s... trust level reached 0 — blacklisted "
+                    "(%d W / %d L, P&L %+.2f)",
+                    wallet[:10], existing["wins"] + win,
+                    existing["losses"] + loss,
+                    round(existing["total_pnl"] + pnl, 2),
+                )
         else:
+            new_trust = max(0, INITIAL_TRUST_LEVEL + delta)
             conn.execute(
                 """INSERT INTO wallet_stats
-                   (wallet, total_copies, wins, losses, total_pnl, last_updated)
-                   VALUES (?, ?, ?, ?, ?, ?)""",
-                (wallet, 1, win, loss, round(pnl, 2), now)
+                   (wallet, total_copies, wins, losses, total_pnl, trust_level, last_updated)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (wallet, 1, win, loss, round(pnl, 2), new_trust, now)
             )
 
 
@@ -283,6 +303,20 @@ def get_wallet_stats(wallet: str) -> dict | None:
             "SELECT * FROM wallet_stats WHERE wallet=?", (wallet,)
         ).fetchone()
         return dict(row) if row else None
+
+
+def get_wallet_trust_level(wallet: str) -> int:
+    """
+    Returns the current trust level for a wallet.
+    New wallets (never traded before) return INITIAL_TRUST_LEVEL.
+    A return value of 0 means the wallet is blacklisted.
+    """
+    from config import INITIAL_TRUST_LEVEL
+    stats = get_wallet_stats(wallet)
+    if stats is None:
+        return INITIAL_TRUST_LEVEL
+    level = stats.get("trust_level")
+    return level if level is not None else INITIAL_TRUST_LEVEL
 
 
 def get_all_wallet_stats() -> list[dict]:
@@ -365,9 +399,11 @@ def get_stats_report() -> dict:
                 ROUND(SUM(COALESCE(ct.pnl_usdc, 0)), 2)             AS total_pnl,
                 ROUND(AVG(CASE WHEN ct.status='CLOSED'
                           THEN ct.pnl_usdc END), 2)                 AS avg_pnl,
-                ROUND(AVG(ct.size_usdc), 2)                         AS avg_size
+                ROUND(AVG(ct.size_usdc), 2)                         AS avg_size,
+                ws.trust_level
             FROM copy_trades ct
             JOIN whale_trades wt ON ct.whale_trade_id = wt.id
+            LEFT JOIN wallet_stats ws ON ws.wallet = wt.wallet
             GROUP BY wt.wallet
             ORDER BY total_pnl ASC
         """).fetchall():

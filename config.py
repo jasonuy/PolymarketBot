@@ -47,6 +47,13 @@ MIN_TRADES_BEFORE_FILTER = int(os.getenv("MIN_TRADES_BEFORE_FILTER", "5"))
 MIN_WIN_RATE_TO_FOLLOW   = float(os.getenv("MIN_WIN_RATE_TO_FOLLOW",  "0.45"))
 MAX_POSITIONS_PER_WALLET = int(os.getenv("MAX_POSITIONS_PER_WALLET",  "2"))
 
+# ── Dynamic whale trust scoring ───────────────────────────────────────────────
+# New wallets start with INITIAL_TRUST_LEVEL concurrent-position slots.
+# Each WIN earns +1 slot (up to MAX_TRUST_LEVEL); each LOSS costs -1.
+# At 0 the wallet is blacklisted — no further copies until manually reset.
+INITIAL_TRUST_LEVEL = int(os.getenv("INITIAL_TRUST_LEVEL", "3"))
+MAX_TRUST_LEVEL     = int(os.getenv("MAX_TRUST_LEVEL",     "10"))
+
 # ── Wallets to follow ─────────────────────────────────────────────────────────
 # Mixed list: top sports traders (Polymarket leaderboard) + political specialists (PolySmartWallet)
 # Updated 2026-04-14 based on cross-leaderboard analysis
