@@ -452,6 +452,7 @@ def check_open_positions() -> None:
     Closes any position that meets a criterion and records P&L.
     """
     trade_executor.reconcile_open_orders()
+    trade_executor.redeem_won_positions()
     positions = database.get_open_positions()
     if not positions:
         return

@@ -18,6 +18,7 @@ from config import (
     MAX_TRADE_USDC,
     MAX_OPEN_POSITIONS,
     MAX_SPREAD_PCT,
+    MAX_POSITIONS_PER_WALLET,
     PAPER_TRADE,
 )
 
@@ -35,6 +36,10 @@ def _open_position_count() -> int:
 
 def _already_in_market(market_id: str) -> bool:
     return any(p["market_id"] == market_id for p in _live_open_positions())
+
+
+def _open_positions_for_wallet(wallet: str) -> int:
+    return sum(1 for p in _live_open_positions() if p.get("source_wallet") == wallet)
 
 
 def _check_liquidity(token_id: str, market_id: str = "", slug: str = "") -> bool:
@@ -79,16 +84,25 @@ def should_copy(trade: WhaleTrade, bankroll_usdc: float) -> tuple[bool, float]:
         logger.info("Max open positions (%d) reached — skipping", MAX_OPEN_POSITIONS)
         return False, 0.0
 
-    # 2. Don't double up on the same market
+    # 2. Per-wallet cap — prevent one noisy wallet from dominating the portfolio
+    wallet_open = _open_positions_for_wallet(trade.wallet)
+    if wallet_open >= MAX_POSITIONS_PER_WALLET:
+        logger.info(
+            "Wallet %s... already has %d open position(s) — skipping (cap: %d)",
+            trade.wallet[:10], wallet_open, MAX_POSITIONS_PER_WALLET,
+        )
+        return False, 0.0
+
+    # 3. Don't double up on the same market
     if _already_in_market(trade.market_id):
         logger.info("Already have an open position in market %s — skipping", trade.market_id[:20])
         return False, 0.0
 
-    # 3. Liquidity check
+    # 4. Liquidity check
     if not _check_liquidity(trade.token_id, market_id=trade.market_id, slug=trade.slug):
         return False, 0.0
 
-    # 4. Calculate position size
+    # 5. Calculate position size
     fractional_size = bankroll_usdc * MAX_POSITION_FRACTION
     size_usdc = min(fractional_size, MAX_TRADE_USDC)
 

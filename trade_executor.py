@@ -276,6 +276,91 @@ def reconcile_open_orders() -> None:
             logger.error("reconcile_open_orders: failed to check order %s: %s", order_id[:18], exc)
 
 
+_redeemable_ids_seen: set = set()
+
+
+def redeem_won_positions() -> int:
+    """
+    Scan for positions on Polymarket that are redeemable (market resolved WIN).
+
+    Redemption requires the Polymarket proxy wallet's owner key, which the bot
+    doesn't hold.  Instead, this function detects redeemable positions, logs them
+    clearly, and sends a Telegram alert so the user can redeem manually at
+    polymarket.com.
+
+    Safe to call every cycle — no-ops in paper mode.  Suppresses repeated alerts
+    by only notifying when the set of redeemable positions changes.
+    Returns number of distinct redeemable positions found.
+    """
+    global _redeemable_ids_seen
+
+    if PAPER_TRADE:
+        return 0
+    if not FUNDER_ADDRESS:
+        return 0
+
+    import api_client as _api
+    import notifier
+
+    positions = _api.get_wallet_positions(FUNDER_ADDRESS)
+    if not positions:
+        return 0
+
+    # A position is redeemable when the market resolved in our favour.
+    # The Data API returns a 'redeemable' boolean — fall back to detecting it via
+    # currentValue ≈ size (shares each worth $1.00 = fully resolved WIN).
+    redeemable = []
+    for p in positions:
+        size = float(p.get("size") or 0)
+        if size <= 0:
+            continue
+        if p.get("redeemable"):
+            redeemable.append(p)
+            continue
+        current_val = float(p.get("currentValue") or 0)
+        if current_val >= size * 0.999:
+            redeemable.append(p)
+
+    if not redeemable:
+        _redeemable_ids_seen = set()  # reset so next batch triggers alert
+        return 0
+
+    # Only alert when the set of redeemable positions changes
+    current_ids = {(p.get("conditionId") or p.get("asset") or "")
+                   for p in redeemable}
+    last_ids    = _redeemable_ids_seen
+    new_ids     = current_ids - last_ids
+    _redeemable_ids_seen = current_ids
+
+    total_usdc = round(sum(float(p.get("currentValue") or 0) for p in redeemable), 2)
+
+    if new_ids:
+        lines = []
+        for p in redeemable:
+            pid = p.get("conditionId") or p.get("asset") or ""
+            if pid not in new_ids:
+                continue
+            title   = (p.get("title") or pid[:12])[:50]
+            outcome = p.get("outcome") or ""
+            val     = float(p.get("currentValue") or 0)
+            lines.append(f"  • {title} / {outcome}  ${val:.2f}")
+        summary = "\n".join(lines)
+        logger.warning(
+            "redeem_won_positions: %d position(s) need manual redemption "
+            "(total ~$%.2f USDC) — go to polymarket.com to claim:\n%s",
+            len(redeemable), total_usdc, summary,
+        )
+        notifier.notify_redemption_needed(redeemable, total_usdc)
+    else:
+        logger.info(
+            "redeem_won_positions: %d pending redemption(s) unchanged (~$%.2f USDC) "
+            "— redeem at polymarket.com",
+            len(redeemable), total_usdc,
+        )
+
+    return len(redeemable)
+
+
 def get_live_balance() -> float:
     """Returns current USDC balance from the CLOB account."""
     client = _get_clob_client()

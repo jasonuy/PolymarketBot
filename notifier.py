@@ -87,6 +87,22 @@ def notify_trade_closed(question: str, outcome: str, entry_price: float,
     )
 
 
+def notify_redemption_needed(positions: list, total_usdc: float) -> None:
+    lines = []
+    for p in positions[:10]:  # cap at 10 to avoid very long messages
+        title   = (p.get("title") or "")[:45]
+        outcome = p.get("outcome") or ""
+        val     = float(p.get("currentValue") or 0)
+        lines.append(f"  • {title} / {outcome}  ${val:.2f}")
+    body = "\n".join(lines)
+    if len(positions) > 10:
+        body += f"\n  … and {len(positions) - 10} more"
+    _send(
+        f"💰 <b>Redemption needed</b>  (~${total_usdc:.2f} USDC)\n"
+        f"Go to polymarket.com → Portfolio → Redeem:\n{body}"
+    )
+
+
 def notify_pnl_summary(summary: dict) -> None:
     _send(
         f"📊 <b>P&L Summary</b>\n"

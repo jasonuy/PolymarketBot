@@ -45,6 +45,7 @@ TAKE_PROFIT_PCT = float(os.getenv("TAKE_PROFIT_PCT", "0.80"))
 # if the wallet's win rate falls below MIN_WIN_RATE_TO_FOLLOW.
 MIN_TRADES_BEFORE_FILTER = int(os.getenv("MIN_TRADES_BEFORE_FILTER", "5"))
 MIN_WIN_RATE_TO_FOLLOW   = float(os.getenv("MIN_WIN_RATE_TO_FOLLOW",  "0.45"))
+MAX_POSITIONS_PER_WALLET = int(os.getenv("MAX_POSITIONS_PER_WALLET",  "2"))
 
 # ── Wallets to follow ─────────────────────────────────────────────────────────
 # Mixed list: top sports traders (Polymarket leaderboard) + political specialists (PolySmartWallet)
