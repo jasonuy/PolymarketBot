@@ -77,7 +77,8 @@ def _place_live_order(token_id: str, price: float, size_usdc: float) -> Optional
 
 
 def execute_sell_trade(token_id: str, shares: float,
-                       market_question: str = "") -> Optional[str]:
+                       market_question: str = "",
+                       cancel_order_id: str = "") -> Optional[str]:
     """
     Submit a SELL order on the CLOB to exit a position.
 
@@ -119,6 +120,17 @@ def execute_sell_trade(token_id: str, shares: float,
                 token_id[:12],
             )
             return ""  # treat as already closed, don't block the DB close
+
+    # Cancel any previous unfilled sell order before placing a fresh one.
+    # This prevents accumulating multiple open sell orders for the same position.
+    if cancel_order_id:
+        client = _get_clob_client()
+        if client:
+            try:
+                client.cancel(cancel_order_id)
+                logger.info("execute_sell_trade: cancelled previous order %s before retry", cancel_order_id[:18])
+            except Exception as exc:
+                logger.debug("execute_sell_trade: cancel %s failed (may already be filled/gone): %s", cancel_order_id[:18], exc)
 
     # Get best bid — the price buyers are willing to pay right now
     best_bid = _api.get_best_bid(token_id)

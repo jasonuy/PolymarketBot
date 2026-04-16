@@ -509,6 +509,7 @@ def check_open_positions() -> None:
                     token_id=token_id,
                     shares=shares,
                     market_question=market_question,
+                    cancel_order_id=pos.get("order_id") or "",
                 )
                 if sell_id is None:
                     # Live sell failed — don't close the DB record, try again next cycle
