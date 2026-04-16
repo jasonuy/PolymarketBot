@@ -73,20 +73,23 @@ def get_starting_balance(wallet: str, current_cash: float) -> Optional[float]:
     """
     Derive net deposits by working backwards from current cash and trade history.
 
-    Formula: net_deposits = current_cash + total_bought_usdc - total_sold_usdc
+    Formula:
+        net_deposits = current_cash + total_bought - total_sold - total_redeemed
 
-    Every dollar deposited either stayed as cash or was used to buy positions.
-    Sell proceeds return to cash. So:
-        deposits = cash + (buys - sells)
+    Every deposited dollar either stays as cash, was spent buying positions, or
+    came back via sells or redemptions.  Redemptions (type=REDEEM) add USDC to
+    the account just like sells, so they must be subtracted here or the starting
+    balance is overstated by the total redeemed amount.
 
     Returns None if activity cannot be fetched.
     """
     trades = get_all_wallet_activity(wallet)
     if not trades:
         return None
-    total_bought = sum(t.get("usdcSize", 0) for t in trades if t.get("side") == "BUY")
-    total_sold   = sum(t.get("usdcSize", 0) for t in trades if t.get("side") == "SELL")
-    return round(current_cash + total_bought - total_sold, 2)
+    total_bought   = sum(t.get("usdcSize", 0) for t in trades if t.get("side") == "BUY")
+    total_sold     = sum(t.get("usdcSize", 0) for t in trades if t.get("side") == "SELL")
+    total_redeemed = sum(t.get("usdcSize", 0) for t in trades if t.get("type") == "REDEEM")
+    return round(current_cash + total_bought - total_sold - total_redeemed, 2)
 
 
 def get_wallet_positions(wallet: str) -> list[dict]:

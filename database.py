@@ -75,6 +75,11 @@ def init_db() -> None:
                 stats_json  TEXT NOT NULL,
                 created_at  TEXT NOT NULL
             );
+
+            CREATE TABLE IF NOT EXISTS db_migrations (
+                name        TEXT PRIMARY KEY,
+                applied_at  TEXT NOT NULL
+            );
         """)
     # Migrate existing databases: add columns if they don't exist yet
     with get_conn() as conn:
@@ -89,6 +94,33 @@ def init_db() -> None:
                 conn.execute(f"ALTER TABLE {col_def[0]} ADD COLUMN {col_def[1]} {col_def[2]}")
             except sqlite3.OperationalError:
                 pass  # column already exists
+
+    # One-time bootstrap: compute trust levels from existing win/loss history.
+    # Without this, wallets added before the trust system was deployed all start
+    # at the DEFAULT 3 regardless of their actual track record.
+    with get_conn() as conn:
+        if not conn.execute(
+            "SELECT 1 FROM db_migrations WHERE name='trust_bootstrap_v1'"
+        ).fetchone():
+            from config import INITIAL_TRUST_LEVEL as _ITL, MAX_TRUST_LEVEL as _MTL
+            rows = conn.execute(
+                "SELECT wallet, wins, losses FROM wallet_stats WHERE total_copies > 0"
+            ).fetchall()
+            for r in rows:
+                computed = max(0, min(_MTL, _ITL + r["wins"] - r["losses"]))
+                conn.execute(
+                    "UPDATE wallet_stats SET trust_level=? WHERE wallet=?",
+                    (computed, r["wallet"])
+                )
+                logger.info(
+                    "trust_bootstrap: %s  %dW/%dL → trust=%d",
+                    r["wallet"][:12], r["wins"], r["losses"], computed,
+                )
+            conn.execute(
+                "INSERT INTO db_migrations (name, applied_at) VALUES ('trust_bootstrap_v1', ?)",
+                (datetime.now(UTC).isoformat(),)
+            )
+            logger.info("trust_bootstrap_v1 migration applied to %d wallet(s)", len(rows))
 
     logger.info("Database initialised at %s", DB_PATH)
 

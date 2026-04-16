@@ -634,17 +634,29 @@ def main() -> None:
 
     cycle = 0
     _last_snapshot_date = ""
+    _last_sync_date = ""
 
     while True:
         try:
             run_once()
             cycle += 1
 
+            now_utc = datetime.now(UTC)
+            today   = now_utc.strftime("%Y-%m-%d")
+
             # Daily stats snapshot — once per UTC calendar day
-            today = datetime.now(UTC).strftime("%Y-%m-%d")
             if today != _last_snapshot_date:
                 database.snapshot_daily_stats()
                 _last_snapshot_date = today
+
+            # 3am UTC daily sync — re-sync open positions and import resolved trades.
+            # Catches any drift between the DB and Polymarket (manual trades, market
+            # resolutions, redemptions) that accumulates over the day.
+            if today != _last_sync_date and now_utc.hour == 3:
+                logger.info("3am UTC daily sync — reconciling positions and trade history")
+                sync_positions_with_polymarket()
+                import_trade_history()
+                _last_sync_date = today
 
             # Print P&L summary every 10 cycles
             if cycle % 10 == 0:
