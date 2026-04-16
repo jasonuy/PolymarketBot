@@ -317,6 +317,24 @@ def get_market_resolution(condition_id: str, outcome: str) -> Optional[float]:
 
 # ── Account ───────────────────────────────────────────────────────────────────
 
+def get_token_balance(wallet: str, token_id: str) -> Optional[float]:
+    """
+    Returns the actual number of shares held for a given token_id in the wallet.
+    Uses the Polymarket positions API — this is the exact balance the CLOB will
+    accept when placing a SELL order (avoids rounding mismatches from recalculating
+    shares as size_usdc / entry_price).
+    Returns None if the position is not found or the request fails.
+    """
+    positions = get_wallet_positions(wallet)
+    for pos in positions:
+        if str(pos.get("asset", "")).lower() == str(token_id).lower():
+            try:
+                return float(pos["size"])
+            except (KeyError, TypeError, ValueError):
+                pass
+    return None
+
+
 def get_usdc_balance(clob_client) -> float:
     """
     Returns the USDC balance available in the Polymarket CLOB account.

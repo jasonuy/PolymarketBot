@@ -84,8 +84,12 @@ def execute_sell_trade(token_id: str, shares: float,
     Fetches the current best-bid price so the order fills immediately rather
     than sitting as an unfilled GTC order above the market.
 
+    Uses the actual token balance from the Polymarket positions API as the sell
+    size — recalculating from size_usdc / entry_price causes rounding mismatches
+    that the CLOB rejects with "not enough balance".
+
     token_id : CLOB token ID for the outcome we hold
-    shares   : number of shares to sell (size_usdc / entry_price at buy time)
+    shares   : fallback share count if the positions API lookup fails
 
     Returns order_id on success, "" in paper mode, None on failure.
     """
@@ -98,11 +102,40 @@ def execute_sell_trade(token_id: str, shares: float,
                     token_id[:12], shares, market_question[:50])
         return ""
 
+    # Use actual token balance from Polymarket to avoid rounding mismatches
+    if FUNDER_ADDRESS:
+        actual_shares = _api.get_token_balance(FUNDER_ADDRESS, token_id)
+        if actual_shares is not None and actual_shares > 0:
+            if abs(actual_shares - shares) > 0.01:
+                logger.info(
+                    "execute_sell_trade: using actual balance %.4f (DB-calculated was %.4f)",
+                    actual_shares, shares,
+                )
+            shares = actual_shares
+        elif actual_shares == 0 or actual_shares is None:
+            logger.warning(
+                "execute_sell_trade: no token balance found on Polymarket for token %s — "
+                "may already be sold or market resolved; skipping",
+                token_id[:12],
+            )
+            return ""  # treat as already closed, don't block the DB close
+
     # Get best bid — the price buyers are willing to pay right now
     best_bid = _api.get_best_bid(token_id)
     if best_bid is None:
         logger.error("execute_sell_trade: cannot get best bid for token %s", token_id[:12])
         return None
+
+    # A best_bid at or above 0.999 means the market resolved in our favour.
+    # The CLOB rejects sell orders priced at 1.0 (out-of-range), and Polymarket
+    # pays out the winning shares automatically on-chain — no sell order needed.
+    if best_bid >= 0.999:
+        logger.info(
+            "execute_sell_trade: best_bid=%.4f ≥ 0.999 — market appears resolved (win); "
+            "skipping SELL, on-chain payout will follow | token=%s  %s",
+            best_bid, token_id[:12], market_question[:50],
+        )
+        return ""  # empty string = success; caller will close the DB record
 
     logger.info(
         "[%s] Selling | token=%s best_bid=%.4f shares=%.4f  %s",
