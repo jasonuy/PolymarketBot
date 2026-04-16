@@ -481,6 +481,12 @@ def check_open_positions() -> None:
                 elif change_pct >= TAKE_PROFIT_PCT:
                     close_price  = current_price
                     close_reason = f"Take-profit ({change_pct:+.1%} from entry)"
+                elif current_price >= 0.99:
+                    # Price converged to ~$1.00 — market has effectively resolved as a WIN.
+                    # The CLOB may not mark it as closed=True for hours, but the price
+                    # already reflects certainty. Close now to free up the position slot.
+                    close_price  = current_price
+                    close_reason = f"Near-resolved WIN ({current_price:.4f})"
 
         # 2. Market resolution check via GAMMA API
         if close_price is None and market_id:
