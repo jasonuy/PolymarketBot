@@ -196,6 +196,8 @@ def reconcile_open_orders() -> None:
         try:
             resp = client.get_order(order_id)
             clob_status = resp.get("status", "")
+            size_matched = float(resp.get("size_matched") or 0)
+
             if clob_status in ("INVALID", "CANCELLED"):
                 logger.warning(
                     "Order %s is %s on CLOB — cancelling DB record (trade id=%d, market=%s)",
@@ -205,6 +207,22 @@ def reconcile_open_orders() -> None:
                 database.cancel_trade(
                     trade["id"],
                     reason=f"CLOB order {clob_status} — never filled",
+                )
+            elif clob_status == "LIVE" and size_matched == 0:
+                # Order is sitting on the book with zero fills — cancel it so it
+                # doesn't occupy a position slot indefinitely.
+                logger.warning(
+                    "Order %s is LIVE but unfilled — cancelling (trade id=%d, market=%s)",
+                    order_id[:18], trade["id"],
+                    (trade.get("market_question") or "")[:40],
+                )
+                try:
+                    client.cancel(order_id)
+                except Exception:
+                    pass
+                database.cancel_trade(
+                    trade["id"],
+                    reason="CLOB order LIVE but never filled — cancelled to free position slot",
                 )
         except Exception as exc:
             logger.error("reconcile_open_orders: failed to check order %s: %s", order_id[:18], exc)

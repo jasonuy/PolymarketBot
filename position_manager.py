@@ -24,13 +24,17 @@ from config import (
 logger = logging.getLogger(__name__)
 
 
+def _live_open_positions() -> list[dict]:
+    """Returns only non-paper open positions — the ones that count against limits."""
+    return [p for p in database.get_open_positions() if not p.get("paper_trade")]
+
+
 def _open_position_count() -> int:
-    return len(database.get_open_positions())
+    return len(_live_open_positions())
 
 
 def _already_in_market(market_id: str) -> bool:
-    positions = database.get_open_positions()
-    return any(p["market_id"] == market_id for p in positions)
+    return any(p["market_id"] == market_id for p in _live_open_positions())
 
 
 def _check_liquidity(token_id: str, market_id: str = "", slug: str = "") -> bool:

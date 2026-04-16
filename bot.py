@@ -288,6 +288,25 @@ def sync_positions_with_polymarket() -> None:
                 trade.get("outcome"),
             )
         else:
+            # Before closing, check if the CLOB order is still active (filling or live).
+            # If so, skip — the position just hasn't propagated to the Data API yet.
+            order_id = trade.get("order_id") or ""
+            if order_id and not PAPER_TRADE:
+                try:
+                    clob_client = trade_executor._get_clob_client()
+                    if clob_client:
+                        resp = clob_client.get_order(order_id)
+                        clob_status = resp.get("status", "")
+                        if clob_status in ("LIVE", "MATCHED"):
+                            logger.info(
+                                "startup_sync: order %s is %s on CLOB — skipping close for id=%d",
+                                order_id[:18], clob_status, trade["id"],
+                            )
+                            db_live_matched.add(key)  # treat as matched
+                            continue
+                except Exception:
+                    pass
+
             logger.warning(
                 "startup_sync: not on Polymarket — closing  id=%d  %s / %s",
                 trade["id"],

@@ -134,20 +134,31 @@ def restart_bot():
     bot_dir = os.path.dirname(os.path.abspath(__file__))
     python  = sys.executable
 
-    # Kill existing bot.py processes
-    subprocess.run(
-        'wmic process where "commandline like \'%bot.py%\'" call terminate',
-        shell=True, capture_output=True
-    )
-    time.sleep(1)
-
-    # Start detached so it outlives this request
-    subprocess.Popen(
-        [python, os.path.join(bot_dir, "bot.py")],
-        cwd=bot_dir,
-        creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP,
-        close_fds=True,
-    )
+    if sys.platform == "win32":
+        subprocess.run(
+            'wmic process where "commandline like \'%bot.py%\'" call terminate',
+            shell=True, capture_output=True
+        )
+        time.sleep(1)
+        subprocess.Popen(
+            [python, os.path.join(bot_dir, "bot.py")],
+            cwd=bot_dir,
+            creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP,
+            close_fds=True,
+        )
+    else:
+        # macOS / Linux
+        subprocess.run(["pkill", "-f", "bot.py"], capture_output=True)
+        time.sleep(1)
+        log_path = os.path.join(bot_dir, "bot.log")
+        with open(log_path, "a") as log_f:
+            subprocess.Popen(
+                [python, os.path.join(bot_dir, "bot.py")],
+                cwd=bot_dir,
+                stdout=log_f,
+                stderr=log_f,
+                start_new_session=True,
+            )
 
 
 def query(sql: str, params: tuple = ()) -> list[dict]:
@@ -413,9 +424,20 @@ def api_balance_history():
     trades = query("""
         SELECT closed_at, pnl_usdc
         FROM copy_trades
-        WHERE status='CLOSED' AND closed_at IS NOT NULL
+        WHERE status='CLOSED' AND paper_trade=0 AND closed_at IS NOT NULL
         ORDER BY closed_at
     """)
+
+    # Use dynamically calculated starting balance (same as /api/summary)
+    try:
+        import trade_executor as _te
+        cash = _te.get_live_balance()
+        starting = _api.get_starting_balance(FUNDER_ADDRESS, cash) if FUNDER_ADDRESS else None
+    except Exception:
+        starting = None
+    if not starting:
+        live_bankroll = float(read_env().get("LIVE_BANKROLL", "0") or "0")
+        starting = live_bankroll if live_bankroll > 0 else 0.0
 
     result = []
     for bucket in buckets:
@@ -426,7 +448,7 @@ def api_balance_history():
         )
         result.append({
             "label": fmt(bucket),
-            "balance": round(STARTING_BANKROLL + cumulative_pnl, 2),
+            "balance": round(starting + cumulative_pnl, 2),
         })
 
     return jsonify(result)
