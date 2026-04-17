@@ -7,6 +7,8 @@ Rules enforced:
   - Absolute USDC cap per trade (MAX_TRADE_USDC)
   - Skip illiquid markets (MAX_SPREAD_PCT)
   - Never trade a market we already have an open position in
+  - Trust-based size multiplier: high-trust whales get 2x, low-trust get 0.5x
+  - Dead-zone avoidance: sizes in $30-40 snapped down to $30 (historically worst bucket)
 """
 
 import logging
@@ -102,7 +104,7 @@ def should_copy(trade: WhaleTrade, bankroll_usdc: float) -> tuple[bool, float]:
     if not _check_liquidity(trade.token_id, market_id=trade.market_id, slug=trade.slug):
         return False, 0.0
 
-    # 5. Calculate position size
+    # 5. Calculate base position size
     fractional_size = bankroll_usdc * MAX_POSITION_FRACTION
     size_usdc = min(fractional_size, MAX_TRADE_USDC)
 
@@ -110,9 +112,32 @@ def should_copy(trade: WhaleTrade, bankroll_usdc: float) -> tuple[bool, float]:
         logger.info("Calculated size %.4f USDC is too small — skipping", size_usdc)
         return False, 0.0
 
+    # 6. Trust-based size multiplier
+    #    High-trust whales (5+) have demonstrated good returns in the $40-50 bucket →
+    #    double their size to target that range.
+    #    Low-trust whales (1-2) have poor track records → halve their size to limit
+    #    exposure while still allowing them to trade.
+    if trust_level >= 5:
+        multiplier = 2.0
+    elif trust_level <= 2:
+        multiplier = 0.5
+    else:
+        multiplier = 1.0
+
+    size_usdc = min(size_usdc * multiplier, MAX_TRADE_USDC * multiplier)
+
+    # 7. Dead-zone avoidance: $30-40 is historically the worst bucket (2W/7L).
+    #    Snap any size that lands there down to $30 to stay in the profitable $20-30 range.
+    if 30.0 < size_usdc < 40.0:
+        logger.info(
+            "Dead-zone avoidance: size %.2f snapped to $30.00 (avoiding $30-40 bucket)",
+            size_usdc,
+        )
+        size_usdc = 30.0
+
     logger.info(
-        "Position approved | size=%.2f USDC (bankroll=%.2f, fraction=%.0f%%, cap=%.0f)",
-        size_usdc, bankroll_usdc, MAX_POSITION_FRACTION * 100, MAX_TRADE_USDC
+        "Position approved | size=%.2f USDC (bankroll=%.2f, fraction=%.0f%%, cap=%.0f, trust=%d, mult=%.1fx)",
+        size_usdc, bankroll_usdc, MAX_POSITION_FRACTION * 100, MAX_TRADE_USDC, trust_level, multiplier,
     )
     return True, round(size_usdc, 2)
 
