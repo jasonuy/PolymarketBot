@@ -260,7 +260,7 @@ def api_trades():
             ct.placed_at,
             ct.closed_at,
             ct.market_id,
-            wt.market_question,
+            COALESCE(ct.market_question, wt.market_question) AS market_question,
             ct.outcome,
             ct.side,
             ROUND(ct.price, 4)       AS entry_price,
@@ -271,7 +271,10 @@ def api_trades():
             ct.paper_trade
         FROM copy_trades ct
         LEFT JOIN whale_trades wt ON ct.whale_trade_id = wt.id
-        ORDER BY ct.placed_at DESC
+        WHERE ct.status IN ('OPEN', 'CLOSED')
+        ORDER BY
+            CASE WHEN ct.status = 'OPEN' THEN 0 ELSE 1 END,
+            ct.placed_at DESC
         LIMIT 100
     """)
     return jsonify(rows)
