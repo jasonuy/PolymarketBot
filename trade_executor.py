@@ -256,6 +256,8 @@ def reconcile_open_orders() -> None:
                     trade["id"],
                     reason=f"CLOB order {clob_status} — never filled",
                 )
+                import position_manager as _pm
+                _pm.mark_market_cancelled(trade.get("market_id") or "")
             elif clob_status == "LIVE" and size_matched == 0:
                 # Order is sitting on the book with zero fills — cancel it so it
                 # doesn't occupy a position slot indefinitely.
@@ -272,6 +274,8 @@ def reconcile_open_orders() -> None:
                     trade["id"],
                     reason="CLOB order LIVE but never filled — cancelled to free position slot",
                 )
+                import position_manager as _pm
+                _pm.mark_market_cancelled(trade.get("market_id") or "")
         except Exception as exc:
             logger.error("reconcile_open_orders: failed to check order %s: %s", order_id[:18], exc)
 

@@ -26,6 +26,16 @@ from config import (
 logger = logging.getLogger(__name__)
 
 
+# Markets whose orders were cancelled this session (unfilled) — don't retry until restart.
+# Prevents the flood of repeated attempts on illiquid markets.
+_cancelled_markets: set[str] = set()
+
+
+def mark_market_cancelled(market_id: str) -> None:
+    """Call this when a live order is cancelled so we don't retry the same market."""
+    _cancelled_markets.add(market_id)
+
+
 def _live_open_positions() -> list[dict]:
     """Returns only non-paper open positions — the ones that count against limits."""
     return [p for p in database.get_open_positions() if not p.get("paper_trade")]
@@ -36,6 +46,8 @@ def _open_position_count() -> int:
 
 
 def _already_in_market(market_id: str) -> bool:
+    if market_id in _cancelled_markets:
+        return True
     return any(p["market_id"] == market_id for p in _live_open_positions())
 
 
