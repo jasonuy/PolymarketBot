@@ -453,6 +453,7 @@ def check_open_positions() -> None:
     """
     trade_executor.reconcile_open_orders()
     trade_executor.redeem_won_positions()
+    cleanup_orphaned_shares()
     positions = database.get_open_positions()
     if not positions:
         return
@@ -550,6 +551,53 @@ def check_open_positions() -> None:
                 pnl=pnl,
                 reason=close_reason,
             )
+
+
+def cleanup_orphaned_shares() -> None:
+    """
+    Sell any shares sitting on Polymarket that don't match an open DB position.
+
+    This catches partial-fill leftovers: when a stop-loss/take-profit sell only
+    partially fills, the DB position is marked CLOSED but a few shares remain
+    on Polymarket with no open order covering them.  Runs every cycle so stranded
+    shares are cleaned up within one poll interval.
+    """
+    if PAPER_TRADE or not FUNDER_ADDRESS:
+        return
+
+    poly_positions = api_client.get_wallet_positions(FUNDER_ADDRESS)
+    if not poly_positions:
+        return
+
+    open_positions = database.get_open_positions()
+    open_token_ids = {
+        p["token_id"] for p in open_positions
+        if p.get("token_id") and not p.get("paper_trade")
+    }
+
+    for p in poly_positions:
+        token_id    = p.get("asset") or ""
+        size        = float(p.get("size") or 0)
+        current_val = float(p.get("currentValue") or 0)
+
+        if not token_id or token_id in open_token_ids:
+            continue
+        if size < 0.01:
+            continue
+        # Skip redeemable wins — don't sell winning shares
+        if current_val >= size * 0.99:
+            continue
+
+        title = (p.get("title") or token_id[:12])[:50]
+        logger.warning(
+            "Orphaned shares: %.4f of '%s' (value $%.4f) — placing cleanup sell",
+            size, title, current_val,
+        )
+        trade_executor.execute_sell_trade(
+            token_id=token_id,
+            shares=size,
+            market_question=title,
+        )
 
 
 def run_once() -> None:
