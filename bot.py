@@ -505,6 +505,7 @@ def check_open_positions() -> None:
             # For resolved markets: no sell needed — Polymarket pays out automatically on-chain.
             # Skip sell for paper trades entirely.
             is_resolution = close_reason and "resolved" in close_reason.lower()
+            is_stop_loss  = close_reason and "stop-loss" in close_reason.lower()
             if not paper and token_id and not is_resolution:
                 shares = round(size_usdc / entry_price, 4) if entry_price > 0 else 0
                 sell_id = trade_executor.execute_sell_trade(
@@ -512,6 +513,7 @@ def check_open_positions() -> None:
                     shares=shares,
                     market_question=market_question,
                     cancel_order_id=pos.get("order_id") or "",
+                    aggressive=is_stop_loss,
                 )
                 if sell_id is None:
                     # Live sell failed — don't close the DB record, try again next cycle

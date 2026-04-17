@@ -78,7 +78,8 @@ def _place_live_order(token_id: str, price: float, size_usdc: float) -> Optional
 
 def execute_sell_trade(token_id: str, shares: float,
                        market_question: str = "",
-                       cancel_order_id: str = "") -> Optional[str]:
+                       cancel_order_id: str = "",
+                       aggressive: bool = False) -> Optional[str]:
     """
     Submit a SELL order on the CLOB to exit a position.
 
@@ -89,8 +90,10 @@ def execute_sell_trade(token_id: str, shares: float,
     size — recalculating from size_usdc / entry_price causes rounding mismatches
     that the CLOB rejects with "not enough balance".
 
-    token_id : CLOB token ID for the outcome we hold
-    shares   : fallback share count if the positions API lookup fails
+    token_id   : CLOB token ID for the outcome we hold
+    shares     : fallback share count if the positions API lookup fails
+    aggressive : if True, price 5% below best_bid to guarantee fill in fast markets
+                 (used for stop-loss exits where getting out matters more than price)
 
     Returns order_id on success, "" in paper mode, None on failure.
     """
@@ -149,10 +152,20 @@ def execute_sell_trade(token_id: str, shares: float,
         )
         return ""  # empty string = success; caller will close the DB record
 
-    logger.info(
-        "[%s] Selling | token=%s best_bid=%.4f shares=%.4f  %s",
-        mode_label, token_id[:12], best_bid, shares, market_question[:50],
-    )
+    # Aggressive mode: price 5% below best_bid to guarantee fill in fast markets.
+    # The CLOB tick size is 0.001, so round down to nearest tick.
+    sell_price = best_bid
+    if aggressive:
+        sell_price = max(0.001, round(best_bid * 0.95, 3))
+        logger.info(
+            "[%s] Selling AGGRESSIVE | token=%s best_bid=%.4f sell_price=%.4f (-5%%) shares=%.4f  %s",
+            mode_label, token_id[:12], best_bid, sell_price, shares, market_question[:50],
+        )
+    else:
+        logger.info(
+            "[%s] Selling | token=%s best_bid=%.4f shares=%.4f  %s",
+            mode_label, token_id[:12], best_bid, shares, market_question[:50],
+        )
 
     client = _get_clob_client()
     if not client:
@@ -161,15 +174,15 @@ def execute_sell_trade(token_id: str, shares: float,
         from py_clob_client.clob_types import OrderArgs, OrderType
         order_args = OrderArgs(
             token_id=token_id,
-            price=best_bid,
+            price=sell_price,
             size=shares,
             side="SELL",
         )
         signed_order = client.create_order(order_args)
         resp = client.post_order(signed_order, OrderType.GTC)
         order_id = resp.get("orderID") or resp.get("id") or ""
-        logger.info("Live SELL placed | order_id=%s token=%s bid=%.4f shares=%.4f",
-                    order_id, token_id[:12], best_bid, shares)
+        logger.info("Live SELL placed | order_id=%s token=%s price=%.4f shares=%.4f",
+                    order_id, token_id[:12], sell_price, shares)
         return order_id
     except Exception as exc:
         logger.error("Sell order failed: %s", exc)
